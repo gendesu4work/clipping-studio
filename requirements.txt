@@ -2,6 +2,7 @@ flask
 opencv-python>=4.10
 numpy
 faster-whisper
+av<19  # av 19 removed open(metadata_errors=...), which faster-whisper 1.2 uses
 anthropic
 yt-dlp
 google-genai

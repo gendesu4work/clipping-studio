@@ -11,3 +11,6 @@ studio.log
 *.lnk
 __pycache__/
 *.pyc
+
+.venv/
+.claude/
