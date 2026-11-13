@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creator Studio</title>
+<link rel="icon" href="/static/icon.png">
+<style>
+:root{--bar:#0d0e11;--line:#24272e;--text:#eceef2;--dim:#8f96a3;--red:#f0443e;--yellow:#ffd60a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bar);font:14px/1.4 "Segoe UI",system-ui,sans-serif;color:var(--text)}
+body{display:flex;flex-direction:column}
+nav{display:flex;align-items:center;gap:6px;padding:0 18px;height:52px;border-bottom:1px solid var(--line);flex:none}
+.logo{font-weight:700;letter-spacing:.02em;margin-right:18px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.logo i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--red),var(--yellow));display:inline-block}
+.tab{background:none;border:0;color:var(--dim);font:inherit;font-weight:600;padding:0 14px;height:52px;cursor:pointer;
+  border-bottom:2px solid transparent;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.tab:hover{color:var(--text)}
+.tab.on{color:var(--text);border-bottom-color:var(--c)}
+.tab .dot{width:8px;height:8px;border-radius:50%;background:var(--c)}
+.badge{background:var(--yellow);color:#1a1500;border-radius:999px;font-size:11px;padding:1px 7px;font-weight:700;display:none}
+.frames{flex:1;position:relative}
+iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:var(--bar)}
+iframe.on{display:block}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:#1d2027;border:1px solid var(--line);
+  padding:10px 16px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none;max-width:90vw}
+#toast.show{opacity:1;transform:translateX(-50%)}
+@media (max-width:520px){.logo span{display:none}.tab{padding:0 8px}}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo"><i></i><span>Creator Studio</span></div>
+  <button class="tab" data-tab="downloader" style="--c:var(--red)"><span class="dot"></span>Clip downloader</button>
+  <button class="tab" data-tab="clipforge" style="--c:var(--yellow)"><span class="dot"></span>ClipForge<span class="badge" id="newBadge">new</span></button>
+</nav>
+<div class="frames">
+  <iframe id="f-downloader" src="/clipper" title="Clip downloader"></iframe>
+  <iframe id="f-clipforge" src="/forge" title="ClipForge"></iframe>
+</div>
+<div id="toast"></div>
+
+<script>
+const frames = { downloader: document.getElementById("f-downloader"), clipforge: document.getElementById("f-clipforge") };
+function show(tab) {
+  if (!frames[tab]) tab = "downloader";
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.dataset.tab === tab));
+  Object.entries(frames).forEach(([k, f]) => f.classList.toggle("on", k === tab));
+  history.replaceState(null, "", "#" + tab);
+  if (tab === "clipforge") {
+    document.getElementById("newBadge").style.display = "none";
+    try { frames.clipforge.contentWindow.loadLibrary(); } catch (e) {}
+  }
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => show(t.dataset.tab));
+
+function whenForgeReady(fn, tries = 60) {
+  const w = frames.clipforge.contentWindow;
+  if (w && w.loadFromLibrary && w.document.readyState === "complete") fn(w);
+  else if (tries > 0) setTimeout(() => whenForgeReady(fn, tries - 1), 150);
+}
+// called by the downloader tab after a clip is saved
+window.openInForge = name => {
+  show("clipforge");
+  whenForgeReady(w => w.loadFromLibrary(name));
+  toast("Loaded “" + name + "” into ClipForge");
+};
+window.clipSaved = () => { document.getElementById("newBadge").style.display = "inline-block"; };
+
+function toast(t) {
+  const el = document.getElementById("toast"); el.textContent = t; el.classList.add("show");
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+const q = new URLSearchParams(location.search).get("forge");
+if (q) { history.replaceState(null, "", "/"); window.openInForge(q); }
+else show(location.hash.slice(1) || "downloader");
+</script>
+</body>
+</html>

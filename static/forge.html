@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge</title>
+<style>
+:root{
+  --bg:#0d0e11; --panel:#16181d; --panel2:#1d2027; --line:#2a2e37; --text:#eceef2; --dim:#9aa1ad;
+  --accent:#ffd60a; --accent-ink:#1a1500; --red:#ff5a5a; --green:#3ddc84; --radius:14px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.02em;font-size:17px}
+.brand i{width:26px;height:26px;border-radius:7px;background:var(--accent);display:grid;place-items:center;color:var(--accent-ink);font-style:normal;font-size:14px}
+.brand small{font-weight:500;color:var(--dim);letter-spacing:0;margin-left:6px}
+button{font:inherit;cursor:pointer}
+.ghost{background:none;border:1px solid var(--line);color:var(--dim);border-radius:9px;padding:6px 12px}
+.ghost:hover{color:var(--text);border-color:#3b404b}
+main{display:grid;grid-template-columns:minmax(300px,420px) 1fr;gap:24px;padding:24px 28px;max-width:1280px;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:1fr;padding:16px}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim);margin:0 0 12px;font-weight:600}
+
+/* drop zone */
+#drop{position:relative;aspect-ratio:9/14;border:2px dashed #353a45;border-radius:var(--radius);display:grid;place-items:center;text-align:center;
+  background:repeating-linear-gradient(45deg,#14161b 0 12px,#15171c 12px 24px);transition:.15s;overflow:hidden;cursor:pointer}
+#drop.over{border-color:var(--accent);background:#1b1a10}
+#drop .hint{padding:24px;color:var(--dim)}
+#drop .hint b{display:block;color:var(--text);font-size:18px;margin:10px 0 4px}
+#drop .icon{width:56px;height:56px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;margin:0 auto;font-size:24px}
+#drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#drop.has{border-style:solid;border-color:var(--line);cursor:default}
+.meta{margin-top:10px;color:var(--dim);font-size:13px;display:flex;justify-content:space-between;gap:8px}
+.meta span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.bar{height:4px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-top:8px;display:none}
+.bar>div{height:100%;width:0;background:var(--accent);transition:width .2s}
+
+/* right column */
+.right{display:flex;flex-direction:column;gap:18px}
+textarea{width:100%;min-height:120px;resize:vertical;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);
+  padding:12px 14px;font:inherit;outline:none}
+textarea:focus{border-color:#4a5060}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chip{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:999px;padding:5px 12px;font-size:13px}
+.chip:hover{color:var(--text);border-color:#454b57}
+.opts{display:grid;grid-template-columns:1fr 1fr;gap:16px 22px}
+@media (max-width:600px){.opts{grid-template-columns:1fr}}
+.opt label.t{display:block;font-size:13px;color:var(--dim);margin-bottom:6px}
+.seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;background:none;border:0;color:var(--dim);padding:6px 4px;border-radius:7px;font-size:13px}
+.seg button.on{background:#2c313b;color:var(--text)}
+.tog{display:flex;align-items:center;gap:10px;color:var(--text);font-size:14px;cursor:pointer;user-select:none}
+.tog input{display:none}
+.tog .sw{width:36px;height:20px;border-radius:20px;background:#343944;position:relative;transition:.15s;flex:none}
+.tog .sw::after{content:"";position:absolute;width:16px;height:16px;border-radius:50%;background:#cfd3da;top:2px;left:2px;transition:.15s}
+.tog input:checked+.sw{background:var(--accent)} .tog input:checked+.sw::after{left:18px;background:#1a1500}
+#musicBox{border:1px dashed #3a3f4a;border-radius:10px;padding:10px 12px;color:var(--dim);font-size:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
+#musicBox.over{border-color:var(--accent)} #musicBox.has{color:var(--text);border-style:solid}
+#go{width:100%;background:var(--accent);color:var(--accent-ink);border:0;border-radius:12px;padding:14px;font-weight:700;font-size:16px;letter-spacing:.01em}
+#go:disabled{opacity:.35;cursor:not-allowed}
+#go:not(:disabled):hover{filter:brightness(1.05)}
+
+/* progress */
+.stages{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.stg{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--panel2);color:var(--dim);border:1px solid var(--line)}
+.stg.on{color:var(--accent-ink);background:var(--accent);border-color:var(--accent)}
+.stg.ok{color:var(--green);border-color:#24553a}
+#pbar{display:block;height:6px}
+#log{margin-top:12px;max-height:180px;overflow:auto;font:12px/1.6 ui-monospace,Consolas,monospace;color:var(--dim);white-space:pre-wrap}
+#log .err{color:var(--red)}
+.result{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start}
+@media (max-width:600px){.result{grid-template-columns:1fr}}
+.result video{width:260px;max-width:100%;border-radius:12px;background:#000;display:block}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--panel2);border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:20px} .stat span{color:var(--dim);font-size:12px}
+.actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:10px 16px;text-decoration:none;font-weight:600}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.hidden{display:none!important}
+
+.lib{margin-top:18px}
+.lib-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.lib-head h2{margin:0}
+#libList{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow:auto}
+.li{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px;cursor:pointer;text-align:left;color:var(--text);width:100%}
+.li:hover{border-color:#454b57} .li.on{border-color:var(--accent);background:#1b1a10}
+.li .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.li .s{color:var(--dim);font-size:12px;flex:none}
+.li .ic{width:28px;height:28px;border-radius:7px;background:var(--panel2);display:grid;place-items:center;flex:none;font-size:13px}
+.empty{color:var(--dim);font-size:13px;padding:10px 2px}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:var(--radius);padding:22px;max-width:440px;width:92vw}
+dialog::backdrop{background:#000a}
+dialog input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:10px 12px;font:inherit;margin:10px 0}
+dialog p{color:var(--dim);font-size:14px;margin:6px 0}
+.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;margin-left:6px}
+.pill.ok{background:#173a28;color:var(--green)} .pill.no{background:var(--panel2);color:var(--dim)}
+</style>
+</head>
+<body>
+<header id="ownHeader">
+  <div class="brand"><i>▶</i>ClipForge<small>drop a video · say how · get a short</small></div>
+  <button class="ghost" id="settingsBtn">Claude <span id="keyPill" class="pill no">off</span></button>
+</header>
+
+<main>
+  <section>
+    <div id="drop">
+      <div class="hint">
+        <div class="icon">⬆</div>
+        <b>Drop your video here</b>
+        <div>or click to choose · mp4, mov, mkv, webm</div>
+      </div>
+    </div>
+    <input type="file" id="file" accept="video/*" hidden>
+    <div class="bar" id="upbar"><div></div></div>
+    <div class="meta hidden" id="meta"><span id="fname"></span><span id="finfo"></span></div>
+    <div class="lib">
+      <div class="lib-head"><h2>Downloaded clips</h2><button class="ghost" id="libRefresh" style="font-size:12px;padding:3px 10px">Refresh</button></div>
+      <div id="libList"><div class="empty">Clips you download in the Clip downloader tab show up here.</div></div>
+    </div>
+  </section>
+
+  <section class="right">
+    <div class="card">
+      <h2>Instructions</h2>
+      <textarea id="instr" placeholder="e.g. Make a 30 second TikTok about her being excited for GTA 6. Cut every pause, keep the funny husband part, end on the strongest line."></textarea>
+      <div class="chips">
+        <button class="chip" data-t="Keep it under 30 seconds and pick the funniest part.">Under 30s, funniest part</button>
+        <button class="chip" data-t="Cut every pause and filler word, make it snappy.">Snappy, no pauses</button>
+        <button class="chip" data-t="Start with the strongest hook line, end on the punchline.">Hook first</button>
+        <button class="chip" data-t="Highlight money words in green and shocking words in red.">Color rules</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Style</h2>
+      <div class="opts">
+        <div class="opt"><label class="t">Format</label>
+          <div class="seg" data-k="aspect"><button data-v="9:16" class="on">9:16</button><button data-v="4:5">4:5</button><button data-v="3:4">3:4</button><button data-v="1:1">1:1</button></div></div>
+        <div class="opt"><label class="t">Pace (pause cutting)</label>
+          <div class="seg" data-k="pace"><button data-v="relaxed">Relaxed</button><button data-v="normal" class="on">Normal</button><button data-v="tight">Tight</button></div></div>
+        <div class="opt"><label class="t">Captions</label>
+          <div class="seg" data-k="caption_position"><button data-v="off">Off</button><button data-v="top">Top</button><button data-v="middle" class="on">Middle</button><button data-v="bottom">Bottom</button></div></div>
+        <div class="opt"><label class="t">Look</label>
+          <label class="tog"><input type="checkbox" id="vignette" checked><span class="sw"></span>Vignette</label></div>
+        <div class="opt" style="grid-column:1/-1"><label class="t">Background music <span style="opacity:.7">(optional, auto-ducked under the voice)</span></label>
+          <div id="musicBox"><span id="musicName">Drop an mp3 / wav here, or click</span><span id="musicClear" class="hidden">✕</span></div>
+          <input type="file" id="musicFile" accept="audio/*" hidden></div>
+      </div>
+    </div>
+
+    <button id="go" disabled>Choose or drop a video to start</button>
+
+    <div class="card hidden" id="progress">
+      <h2>Editing</h2>
+      <div class="stages" id="stages"></div>
+      <div class="bar" id="pbar"><div></div></div>
+      <div id="log"></div>
+    </div>
+
+    <div class="card hidden" id="resultCard">
+      <h2>Your short</h2>
+      <div class="result">
+        <video id="out" controls playsinline></video>
+        <div>
+          <div class="stats" id="stats"></div>
+          <div class="actions">
+            <a class="btn primary" id="dl" href="#">Download MP4</a>
+            <button class="btn" id="again">Change instructions & re-edit</button>
+          </div>
+          <p style="color:var(--dim);font-size:13px;margin-top:14px" id="summary"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <h3 style="margin:0 0 6px">Claude director</h3>
+  <p>With an Anthropic API key, Claude reads the transcript and follows your instructions: picks the best story, cuts tangents, and colors keywords by meaning. Without a key, built-in rules remove pauses, filler and stutters and handle simple requests (length, format, captions on/off).</p>
+  <input id="key" type="password" placeholder="sk-ant-... (stored only on this PC)">
+  <div class="actions"><button class="btn primary" id="saveKey">Save</button><button class="btn" id="clearKey">Remove key</button><button class="btn" onclick="dlg.close()">Close</button></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+if (window.parent !== window) { const h = document.getElementById("ownHeader"); h.style.borderBottom = "0"; h.querySelector(".brand").style.visibility = "hidden"; }
+const STAGES = ["Transcribing", "Planning the edit", "Tracking faces", "Rendering"];
+let job = null, polling = null, srcDur = 0;
+const opts = {aspect: "9:16", pace: "normal", caption_position: "middle"};
+
+// segmented controls
+document.querySelectorAll(".seg").forEach(seg => seg.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  seg.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  opts[seg.dataset.k] = b.dataset.v;
+}));
+document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
+  const t = $("#instr"); t.value = (t.value.trim() ? t.value.trim() + " " : "") + c.dataset.t; t.focus();
+}));
+
+// uploads (raw body + progress)
+function upload(file, kind) {
+  return new Promise((res, rej) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", `/api/upload?kind=${kind}` + (job ? `&job=${job}` : ""));
+    x.setRequestHeader("X-Filename", encodeURIComponent(file.name).replace(/%20/g, " "));
+    if (kind === "video") {
+      $("#upbar").style.display = "block";
+      x.upload.onprogress = e => $("#upbar>div").style.width = (e.loaded / e.total * 100) + "%";
+    }
+    x.onload = () => { $("#upbar").style.display = "none"; const r = JSON.parse(x.responseText); x.status < 300 ? res(r) : rej(r.error || "Upload failed"); };
+    x.onerror = () => rej("Upload failed");
+    x.send(file);
+  });
+}
+
+function showSource(src, name, status) {
+  job = null;
+  const d = $("#drop"); d.classList.add("has");
+  d.innerHTML = ""; const v = document.createElement("video");
+  v.src = src; v.controls = true; d.appendChild(v);
+  $("#meta").classList.remove("hidden"); $("#fname").textContent = name; $("#finfo").textContent = status;
+  $("#go").disabled = true; $("#go").textContent = status;
+  $("#resultCard").classList.add("hidden"); $("#progress").classList.add("hidden");
+}
+async function ready(r) {
+  job = r.job; const i = r.info; srcDur = i.dur;
+  $("#finfo").textContent = `${i.w}×${i.h} · ${i.fps.toFixed(0)} fps · ${fmt(i.dur)}`;
+  $("#go").disabled = false; $("#go").textContent = "Edit my video";
+  if (musicPending) { await upload(musicPending, "music"); musicPending = null; }
+}
+async function setVideo(file) {
+  if (!file || !file.type.startsWith("video") && !/\.(mp4|mov|mkv|webm|m4v|avi)$/i.test(file.name)) return alert("That doesn't look like a video file.");
+  document.querySelectorAll(".li").forEach(x => x.classList.remove("on"));
+  showSource(URL.createObjectURL(file), file.name, "Uploading…");
+  try { await ready(await upload(file, "video")); }
+  catch (e) { $("#finfo").textContent = ""; $("#go").textContent = "Upload a video to start"; alert(e); }
+}
+
+// ---------- downloaded clips (shared library) ----------
+const mb2 = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+let libSelected = null;
+async function loadLibrary() {
+  const { items } = await fetch("/api/library").then(r => r.json());
+  const box = $("#libList");
+  if (!items.length) { box.innerHTML = `<div class="empty">Clips you download in the Clip downloader tab show up here.</div>`; return; }
+  box.innerHTML = "";
+  items.forEach(it => {
+    const b = document.createElement("button");
+    b.className = "li" + (it.name === libSelected ? " on" : "");
+    b.innerHTML = `<span class="ic">▶</span><span class="n"></span><span class="s">${mb2(it.size)} · ${ago(it.mtime)}</span>`;
+    b.querySelector(".n").textContent = it.name; b.title = it.name;
+    b.onclick = () => loadFromLibrary(it.name);
+    box.appendChild(b);
+  });
+}
+async function loadFromLibrary(name) {
+  libSelected = name;
+  document.querySelectorAll(".li").forEach(x => x.classList.toggle("on", x.title === name));
+  showSource("/api/library/file/" + encodeURIComponent(name), name, "Loading…");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  try {
+    const r = await fetch("/api/forge/from-library", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    const d = await r.json(); if (!r.ok) throw d.error || "Could not open that clip";
+    await ready(d);
+    $("#instr").focus();
+  } catch (e) { $("#finfo").textContent = ""; $("#go").textContent = "Choose a video to start"; alert(e); }
+  loadLibrary();
+}
+window.loadFromLibrary = loadFromLibrary;
+window.loadLibrary = loadLibrary;
+$("#libRefresh").addEventListener("click", loadLibrary);
+loadLibrary();
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+
+const drop = $("#drop");
+drop.addEventListener("click", () => { if (!drop.classList.contains("has")) $("#file").click(); });
+$("#file").addEventListener("change", e => setVideo(e.target.files[0]));
+["dragenter", "dragover"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); if (!e.target.closest("#musicBox")) drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+document.addEventListener("drop", e => {
+  const f = e.dataTransfer.files[0]; if (!f) return;
+  if (e.target.closest("#musicBox") || f.type.startsWith("audio")) setMusic(f); else setVideo(f);
+});
+
+// music
+let musicPending = null;
+const mb = $("#musicBox");
+mb.addEventListener("click", e => { if (e.target.id === "musicClear") return; $("#musicFile").click(); });
+$("#musicFile").addEventListener("change", e => setMusic(e.target.files[0]));
+mb.addEventListener("dragover", e => { e.preventDefault(); mb.classList.add("over"); });
+mb.addEventListener("dragleave", () => mb.classList.remove("over"));
+async function setMusic(f) {
+  if (!f) return; mb.classList.remove("over"); mb.classList.add("has");
+  $("#musicName").textContent = "♪ " + f.name; $("#musicClear").classList.remove("hidden");
+  if (job) await upload(f, "music"); else musicPending = f;
+  opts.music = true;
+}
+$("#musicClear").addEventListener("click", () => {
+  opts.music = false; musicPending = null; mb.classList.remove("has");
+  $("#musicName").textContent = "Drop an mp3 / wav here, or click"; $("#musicClear").classList.add("hidden");
+});
+
+// run
+$("#go").addEventListener("click", async () => {
+  if (!job) return;
+  const o = {aspect: opts.aspect, pace: opts.pace, captions: opts.caption_position !== "off",
+             caption_position: opts.caption_position === "off" ? "middle" : opts.caption_position,
+             vignette: $("#vignette").checked, music: opts.music !== false};
+  const r = await fetch("/api/start", {method: "POST", headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({job, instructions: $("#instr").value, options: o})}).then(r => r.json());
+  if (r.error) return alert(r.error);
+  $("#go").disabled = true; $("#go").textContent = "Editing…";
+  $("#progress").classList.remove("hidden"); $("#resultCard").classList.add("hidden");
+  $("#pbar").style.display = "block";
+  clearInterval(polling); polling = setInterval(poll, 700); poll();
+});
+
+async function poll() {
+  const s = await fetch(`/api/status/${job}`).then(r => r.json());
+  const cur = STAGES.indexOf(s.stage);
+  $("#stages").innerHTML = STAGES.map((n, i) =>
+    `<span class="stg ${s.done && !s.error ? "ok" : i === cur ? "on" : i < cur ? "ok" : ""}">${i < cur || (s.done && !s.error) ? "✓ " : ""}${n}</span>`).join("");
+  const overall = s.done ? 1 : cur < 0 ? 0 : (cur + (s.progress || 0)) / STAGES.length;
+  $("#pbar>div").style.width = (overall * 100) + "%";
+  const log = $("#log");
+  log.innerHTML = (s.log || []).map(l => `<div class="${l.includes("ERROR") ? "err" : ""}">${l.replace(/[<&]/g, c => c === "<" ? "&lt;" : "&amp;")}</div>`).join("");
+  log.scrollTop = log.scrollHeight;
+  if (s.done) {
+    clearInterval(polling);
+    $("#go").disabled = false; $("#go").textContent = "Edit again";
+    if (!s.error && s.output) showResult(s);
+  }
+}
+
+function showResult(s) {
+  const url = `/api/file/${job}/${s.output}`;
+  $("#out").src = url; $("#dl").href = url + "?dl=1";
+  const r = s.result;
+  $("#stats").innerHTML = [
+    [fmt(r.duration), "final length"], [fmt(Math.max(0, srcDur - r.duration)), "removed"],
+    [r.clips, "clips joined"], [`${r.width}×${r.height}`, "resolution"]]
+    .map(([b, t]) => `<div class="stat"><b>${b}</b><span>${t}</span></div>`).join("");
+  const plan = (s.log || []).find(l => l.includes("Plan: "));
+  $("#summary").textContent = plan ? plan.split("Plan: ")[1] : "";
+  $("#resultCard").classList.remove("hidden");
+  $("#resultCard").scrollIntoView({behavior: "smooth", block: "start"});
+}
+$("#again").addEventListener("click", () => { $("#instr").focus(); window.scrollTo({top: 0, behavior: "smooth"}); });
+
+// Claude key
+const dlg = $("#dlg");
+async function refreshKey() {
+  const c = await fetch("/api/config").then(r => r.json());
+  $("#keyPill").textContent = c.has_key ? "on" : "off"; $("#keyPill").className = "pill " + (c.has_key ? "ok" : "no");
+}
+$("#settingsBtn").addEventListener("click", () => dlg.showModal());
+$("#saveKey").addEventListener("click", async () => {
+  await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({anthropic_api_key: $("#key").value})});
+  $("#key").value = ""; dlg.close(); refreshKey();
+});
+$("#clearKey").addEventListener("click", async () => {
+  await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({anthropic_api_key: ""})});
+  dlg.close(); refreshKey();
+});
+refreshKey();
+</script>
+</body>
+</html>

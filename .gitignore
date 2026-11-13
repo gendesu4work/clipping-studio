@@ -1,0 +1,13 @@
+# secrets / personal sign-ins - never commit
+.env
+cookies.txt
+config.json
+settings.json
+
+# runtime data
+jobs/
+library/
+studio.log
+*.lnk
+__pycache__/
+*.pyc

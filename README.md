@@ -1,0 +1,48 @@
+# Creator Studio
+
+One localhost app with two tabs:
+
+- **Clip downloader**: paste a YouTube link and pick start/end, or let Gemini find the best or funniest moments, then download the clip. Every clip is also saved to `library/`.
+- **ClipForge**: pick a clip from **Downloaded clips** (or press **Edit in ClipForge** right after a download), or drag in any video. Type instructions and get the edited short.
+
+Open it with the **Creator Studio** shortcut (on the Desktop, in the Start menu, or in this folder). The shortcut starts the server in the background, with no console window, and opens the app in its own window. To pin it, right-click the shortcut and choose **Pin to taskbar**.
+
+The server keeps running after you close the window. To shut it down, run **`Stop Creator Studio.pyw`**. `Start Creator Studio.cmd` still works too: it runs the server in a console window, which is useful for seeing errors. Background logs go to `studio.log`.
+
+## ClipForge
+
+Drag in an interview or talking-head video, type what you want, and get back a vertical short in the same style as the reference video. You get:
+
+- **No dead air.** It cuts every pause longer than 0.35s (adjustable with Pace), plus filler words, stutters and, with Claude, tangents.
+- **Smooth head following.** The crop holds still while the speaker stays near the middle and glides when they move away. It snaps instantly on camera switches.
+- **Word-by-word captions.** Bold uppercase with wide letter spacing. Each word fades in from grey as it's spoken, and keywords are colored with a soft glow.
+- **Vignette.** A dark gradient at the bottom and a light shade at the top.
+- **Music bed (optional).** The track loops and ducks automatically under the voice, and the mix is normalized to -14 LUFS.
+
+## Run
+
+Requirements: Python 3.10+ (`pip install -r requirements.txt`) and `ffmpeg` on PATH.
+
+Your keys and sign-ins stay on your PC and are git-ignored: the Gemini key (`.env`), YouTube cookies (`cookies.txt`), the Claude key (`config.json`) and `settings.json`. Enter them in the app.
+
+## Instructions
+
+- **Without an API key**, built-in rules handle:
+  - "under 30 seconds"
+  - "9:16" / "square"
+  - "no captions"
+  - "captions at the top"
+  - "no music"
+  - "snappy" / "keep the pauses"
+- **With an Anthropic API key** (the **Claude** button, top right), Claude reads the transcript. It picks the best story, cuts tangents, puts the hook first and colors keywords by meaning.
+
+## Files
+
+- `pipeline.py`: the editing engine. Also usable from the command line: `python pipeline.py in.mp4 out.mp4 --instructions "..." --music song.mp3`.
+- `director.py`: turns your instructions into an edit plan (Claude or built-in rules).
+- `server.py`: the combined server. `static/index.html` is the two-tab shell.
+- `clipper.py` + `static/clipper.html`: the YouTube clip downloader.
+- `forge_routes.py` + `static/forge.html`: ClipForge and the shared clip library.
+- `library/`: every downloaded clip.
+- `jobs/`: uploads and finished edits.
+- `models/`: the YuNet face detector.

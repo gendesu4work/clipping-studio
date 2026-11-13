@@ -1,0 +1,9 @@
+flask
+opencv-python>=4.10
+numpy
+faster-whisper
+anthropic
+yt-dlp
+google-genai
+pydantic
+pillow

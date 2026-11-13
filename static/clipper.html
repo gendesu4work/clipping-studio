@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Clipper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #ffffff; --text: #18181b; --muted: #6b6b73;
+    --line: #e4e4e0; --accent: #e5322d; --accent-ink: #fff; --field: #fafaf8;
+    --err-bg: #fdecec; --err: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111113; --card: #1a1a1d; --text: #ededee; --muted: #9a9aa3;
+      --line: #2b2b30; --accent: #f0443e; --field: #141416;
+      --err-bg: #3a1716; --err: #ff9b93;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 Inter, system-ui, sans-serif; min-height: 100vh;
+    display: flex; justify-content: center; padding: 48px 16px;
+  }
+  main { width: 100%; max-width: 640px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
+  h1 .dot { width: 26px; height: 18px; border-radius: 5px; background: var(--accent); position: relative; }
+  h1 .dot::after { content: ""; position: absolute; left: 10px; top: 5px; border-left: 7px solid #fff; border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  input, select {
+    width: 100%; font: inherit; color: var(--text); background: var(--field);
+    border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; min-width: 0; }
+  .field { margin-bottom: 16px; }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 9px; cursor: pointer;
+    padding: 10px 16px; background: var(--accent); color: var(--accent-ink);
+  }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 500; padding: 6px 10px; font-size: 13px; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .load { flex: 0 0 auto; }
+  #preview { display: none; margin: 4px 0 18px; }
+  .player { position: relative; padding-top: 56.25%; border-radius: 10px; overflow: hidden; background: #000; }
+  .player > div, .player iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .meta { margin-top: 10px; font-size: 14px; }
+  .meta b { display: block; }
+  .meta span { color: var(--muted); }
+  .time-actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .length { color: var(--muted); font-size: 13px; margin: -6px 0 16px; }
+  #go { width: 100%; padding: 13px; font-size: 16px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .spin { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: s .8s linear infinite; display: none; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  #msg { margin-top: 14px; font-size: 14px; border-radius: 9px; padding: 10px 12px; display: none; }
+  #msg.err { display: block; background: var(--err-bg); color: var(--err); }
+  #msg.ok { display: block; background: var(--field); border: 1px solid var(--line); }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 18px; text-align: center; }
+  @media (max-width: 480px) { .row.times { flex-direction: column; } }
+
+  /* --- AI moments --- */
+  .card + .card { margin-top: 16px; }
+  .card h2 { font-size: 17px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  .card .desc { color: var(--muted); font-size: 13.5px; margin: 0 0 16px; }
+  .pill { font-size: 12px; font-weight: 500; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); margin-left: auto; white-space: nowrap; }
+  .pill.on { color: #1a7f37; border-color: #1a7f3755; background: #1a7f3712; }
+  @media (prefers-color-scheme: dark) { .pill.on { color: #5fd47a; } }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; background: var(--field); }
+  .seg button { flex: 1; background: transparent; color: var(--muted); font-weight: 600; padding: 9px; }
+  .seg button.active { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  #analyze { width: 100%; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--text); color: var(--bg); }
+  #analyze .spin { border-color: rgba(128,128,128,.4); border-top-color: var(--bg); }
+  #keyBox { display: none; }
+  #keyBox a { color: var(--accent); }
+  .summary { font-size: 14px; color: var(--muted); margin: 16px 0 4px; }
+  .moment { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 10px; background: var(--field); }
+  .moment-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ts { font: 600 13px ui-monospace, Consolas, monospace; background: var(--accent); color: #fff; border-radius: 6px; padding: 3px 8px; cursor: pointer; border: 0; }
+  .moment h3 { font-size: 15px; margin: 0; flex: 1; min-width: 150px; }
+  .score { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .moment p { margin: 8px 0 0; font-size: 14px; }
+  .moment .why { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .moment-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .moment-actions .dl { padding: 7px 14px; font-size: 14px; display: inline-flex; align-items: center; gap: 8px; }
+  .moment-actions .dl .spin { width: 13px; height: 13px; }
+  .moment-actions .note { font-size: 13px; color: var(--muted); align-self: center; }
+  details.card { margin-top: 16px; }
+  details summary { cursor: pointer; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary h2 { margin: 0; width: 100%; }
+  details summary h2::after { content: "▸"; margin-left: 6px; color: var(--muted); font-size: 13px; }
+  details[open] summary h2::after { content: "▾"; }
+  input[type=file] { padding: 8px; }
+  .forge-btn { margin-top: 10px; background: #ffd60a; color: #1a1500; border: 0; border-radius: 9px;
+    padding: 8px 14px; font: 600 14px/1.2 Inter, system-ui, sans-serif; cursor: pointer; width: auto; }
+  .forge-btn:hover { filter: brightness(1.05); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot"></span>YouTube Clipper</h1>
+  <p class="sub">Paste a link, pick a start and end, and download just that part.</p>
+
+  <div class="card">
+    <div class="field">
+      <label for="url">YouTube link</label>
+      <div class="row">
+        <input id="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+        <button class="load ghost" id="loadBtn" type="button">Load</button>
+      </div>
+    </div>
+
+    <div id="preview">
+      <div class="player"><div id="player"></div></div>
+      <div class="meta"><b id="title"></b><span id="channel"></span></div>
+    </div>
+
+    <div class="row times">
+      <div class="field">
+        <label for="start">Start</label>
+        <input id="start" placeholder="0:30" value="0:00">
+        <div class="time-actions"><button class="ghost" type="button" data-set="start">Use current time</button></div>
+      </div>
+      <div class="field">
+        <label for="end">End</label>
+        <input id="end" placeholder="1:15">
+        <div class="time-actions"><button class="ghost" type="button" data-set="end">Use current time</button></div>
+      </div>
+    </div>
+    <div class="length" id="length"></div>
+
+    <div class="field">
+      <label for="quality">Quality</label>
+      <select id="quality">
+        <option value="best">Best available (MP4)</option>
+        <option value="1080">1080p (MP4)</option>
+        <option value="720" selected>720p (MP4)</option>
+        <option value="480">480p (MP4)</option>
+        <option value="audio">Audio only (MP3)</option>
+      </select>
+    </div>
+
+    <button id="go" type="button"><span class="spin" id="spin"></span><span id="goText">Download clip</span></button>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>✨ Find moments with Gemini <span class="pill" id="gemStatus">Checking…</span></h2>
+    <p class="desc">Gemini watches the video and gives you the timestamps and what happens. Click download on any of them.</p>
+
+    <div id="keyBox" class="field">
+      <label for="apiKey">Gemini API key</label>
+      <div class="row">
+        <input id="apiKey" type="password" placeholder="Paste your key here" autocomplete="off">
+        <button class="load ghost" id="saveKey" type="button">Connect</button>
+      </div>
+      <div class="hint" style="text-align:left;margin-top:6px">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. It's saved only on this computer.</div>
+    </div>
+
+    <div class="field">
+      <label>What should Gemini look for?</label>
+      <div class="seg" id="modeSeg">
+        <button type="button" data-mode="best" class="active">🔥 Best moments</button>
+        <button type="button" data-mode="funny">😂 Funniest moments</button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field" style="flex:0 0 110px">
+        <label for="count">How many</label>
+        <select id="count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select>
+      </div>
+      <div class="field">
+        <label for="extra">Extra instructions (optional)</label>
+        <input id="extra" placeholder="e.g. only moments with the dog">
+      </div>
+    </div>
+    <button id="analyze" type="button"><span class="spin" id="aSpin"></span><span id="aText">Analyze video</span></button>
+    <div id="aMsg" style="margin-top:14px;font-size:14px;border-radius:9px;padding:10px 12px;display:none"></div>
+    <div id="results"></div>
+  </div>
+
+  <details class="card" id="signin">
+    <summary><h2 style="display:inline-flex">🔐 YouTube sign-in <span class="pill" id="ckStatus" style="margin-left:10px">Off</span></h2></summary>
+    <p class="desc" style="margin-top:10px">Needed for age-restricted, private or members-only videos. The app uses your YouTube sign-in only on this computer.</p>
+    <div class="field">
+      <label for="ckSource">Use sign-in from</label>
+      <select id="ckSource">
+        <option value="none">Don't use a sign-in</option>
+        <option value="file">cookies.txt file (most reliable)</option>
+        <option value="firefox">Firefox</option>
+        <option value="brave">Brave</option>
+        <option value="edge">Microsoft Edge</option>
+        <option value="chrome">Google Chrome</option>
+      </select>
+    </div>
+    <div id="ckFileBox" class="field" style="display:none">
+      <label for="ckFile">Upload cookies.txt</label>
+      <input type="file" id="ckFile" accept=".txt">
+      <ol class="desc" style="margin:10px 0 0;padding-left:18px">
+        <li>In your browser, install the <b>“Get cookies.txt LOCALLY”</b> extension.</li>
+        <li>Open <b>youtube.com</b> while you're signed in.</li>
+        <li>Click the extension → <b>Export</b>, then choose that file here.</li>
+      </ol>
+    </div>
+    <div id="ckBrowserNote" class="desc" style="display:none;margin:0 0 12px">Chrome, Edge and Brave lock their cookies while they're open, and newer versions encrypt them, so reading them often fails. If it does, use the cookies.txt option.</div>
+    <button id="ckSave" class="ghost" type="button">Save</button>
+    <div id="ckMsg" style="font-size:13.5px;margin-top:10px"></div>
+  </details>
+
+  <p class="hint">Times can be seconds (90), mm:ss (1:30) or hh:mm:ss (1:02:03).</p>
+</main>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const $ = id => document.getElementById(id);
+let player = null, duration = null, restricted = false;
+
+function toSec(v) {
+  v = (v || "").trim();
+  if (!/^\d+(\.\d+)?$|^(\d+:){1,2}\d{1,2}(\.\d+)?$/.test(v)) return null;
+  return v.split(":").reduce((a, p) => a * 60 + parseFloat(p), 0);
+}
+function toStamp(s) {
+  s = Math.floor(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  const mm = h ? String(m).padStart(2, "0") : m;
+  return (h ? h + ":" : "") + mm + ":" + String(sec).padStart(2, "0");
+}
+function videoId(url) {
+  const m = url.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+function showMsg(text, kind) { const m = $("msg"); m.textContent = text; m.className = kind || ""; }
+function updateLength() {
+  const a = toSec($("start").value), b = toSec($("end").value);
+  $("length").textContent = (a != null && b != null && b > a) ? `Clip length: ${toStamp(b - a)}` : "";
+}
+
+async function loadVideo() {
+  const url = $("url").value.trim();
+  if (!url) return;
+  showMsg("");
+  $("loadBtn").disabled = true; $("loadBtn").textContent = "Loading…";
+  try {
+    const r = await fetch("/api/info", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    duration = d.duration; restricted = !!d.restricted;
+    $("title").textContent = d.title;
+    $("channel").textContent = (d.channel || "") + (d.duration ? " · " + toStamp(d.duration) : "");
+    $("preview").style.display = "block";
+    if (!$("end").value && d.duration) $("end").value = toStamp(Math.min(d.duration, 30));
+    const id = d.id || videoId(url);
+    if (window.YT && YT.Player) {
+      if (player) player.loadVideoById(id);
+      else player = new YT.Player("player", { videoId: id, playerVars: { rel: 0 } });
+    }
+    updateLength();
+  } catch (e) {
+    duration = null; restricted = false;
+    $("preview").style.display = "none";
+    if (player && player.stopVideo) player.stopVideo();
+    showMsg(e.message, "err");
+    if (/sign-in|signed-in|cookies/i.test(e.message)) $("signin").open = true;
+  } finally {
+    $("loadBtn").disabled = false; $("loadBtn").textContent = "Load";
+  }
+}
+
+// Downloads one clip; returns a status message. Throws on error.
+async function fetchClip(url, start, end) {
+  const r = await fetch("/api/clip", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, start, end, quality: $("quality").value }) });
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || "Something went wrong."); }
+  const blob = await r.blob();
+  const cd = r.headers.get("Content-Disposition") || "";
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i), plain = cd.match(/filename="?([^";]+)"?/i);
+  const name = star ? decodeURIComponent(star[1]) : plain ? plain[1] : "clip.mp4";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  const lib = r.headers.get("X-Library-File");
+  return { text: `Saved “${name}” (${(blob.size / 1048576).toFixed(1)} MB).`, lib: lib ? decodeURIComponent(lib) : null };
+}
+
+// ---------- hand-off to the ClipForge tab ----------
+function openInForge(lib) {
+  if (window.parent !== window && window.parent.openInForge) window.parent.openInForge(lib);
+  else location.href = "/?forge=" + encodeURIComponent(lib);
+}
+function showSaved(el, prefix, res) {
+  el.textContent = prefix + res.text;
+  try { if (res.lib && window.parent !== window) window.parent.clipSaved(); } catch (e) {}
+  if (res.lib && !/\.mp3$/i.test(res.lib)) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "forge-btn"; b.textContent = "✂ Edit in ClipForge →";
+    b.onclick = () => openInForge(res.lib);
+    el.appendChild(document.createElement("br")); el.appendChild(b);
+  }
+}
+
+async function download() {
+  const url = $("url").value.trim(), start = $("start").value, end = $("end").value;
+  const a = toSec(start), b = toSec(end);
+  if (!url) return showMsg("Paste a YouTube link first.", "err");
+  if (a == null || b == null) return showMsg("Enter start and end like 1:30 or 90.", "err");
+  if (b <= a) return showMsg("End time must be after start time.", "err");
+  if (duration && b > duration + 1) return showMsg(`End time is past the end of the video (${toStamp(duration)}).`, "err");
+
+  $("go").disabled = true; $("spin").style.display = "block";
+  $("goText").textContent = restricted ? "Clipping… first time downloads the full video (a few minutes)" : "Clipping… this can take a minute";
+  showMsg("");
+  try {
+    const res = await fetchClip(url, start, end);
+    showMsg("", "ok"); showSaved($("msg"), "Done — ", res);
+  } catch (e) {
+    showMsg(e.message, "err");
+  } finally {
+    $("go").disabled = false; $("spin").style.display = "none"; $("goText").textContent = "Download clip";
+  }
+}
+
+// ---------- Gemini ----------
+let mode = "best";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function aMsg(text, kind) {
+  const m = $("aMsg"); m.textContent = text;
+  m.style.display = text ? "block" : "none";
+  m.style.background = kind === "err" ? "var(--err-bg)" : "var(--field)";
+  m.style.color = kind === "err" ? "var(--err)" : "var(--text)";
+}
+function setStatus(d) {
+  const s = $("gemStatus");
+  if (d.connected) { s.textContent = "Connected · " + d.model; s.className = "pill on"; $("keyBox").style.display = "none"; }
+  else { s.textContent = "Not connected"; s.className = "pill"; $("keyBox").style.display = "block"; }
+}
+async function checkGemini() {
+  try { setStatus(await (await fetch("/api/gemini/status")).json()); } catch { setStatus({}); }
+}
+async function saveKey() {
+  const key = $("apiKey").value.trim();
+  if (!key) return;
+  $("saveKey").disabled = true; $("saveKey").textContent = "Checking…";
+  try {
+    const r = await fetch("/api/gemini/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    $("apiKey").value = ""; setStatus(d); aMsg("");
+  } catch (e) { aMsg(e.message, "err"); }
+  finally { $("saveKey").disabled = false; $("saveKey").textContent = "Connect"; }
+}
+
+async function analyze() {
+  const url = $("url").value.trim();
+  if (!url) return aMsg("Paste a YouTube link at the top first.", "err");
+  if (!duration) await loadVideo();
+  $("analyze").disabled = true; $("aSpin").style.display = "block";
+  $("aText").textContent = "Gemini is watching the video… (can take 1–3 min)";
+  aMsg(""); $("results").innerHTML = "";
+  try {
+    const r = await fetch("/api/moments", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mode, count: +$("count").value, extra: $("extra").value, duration, restricted }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    renderMoments(url, d);
+  } catch (e) { aMsg(e.message, "err"); }
+  finally { $("analyze").disabled = false; $("aSpin").style.display = "none"; $("aText").textContent = "Analyze video"; }
+}
+
+function renderMoments(url, d) {
+  if (!d.moments.length) { $("results").innerHTML = `<p class="summary">Gemini didn't find any moments. Try different instructions.</p>`; return; }
+  $("results").innerHTML = `<p class="summary">${esc(d.summary)} <span style="opacity:.7">· analyzed by ${esc(d.model)}</span>` +
+    (d.note ? `<br><span style="font-size:12.5px">ℹ️ ${esc(d.note)}</span>` : "") + `</p>` +
+    d.moments.map((m, i) => `
+      <div class="moment">
+        <div class="moment-top">
+          <button class="ts" data-seek="${m.start_sec}" title="Play this moment">${toStamp(m.start_sec)} – ${toStamp(m.end_sec)}</button>
+          <h3>${esc(m.title)}</h3>
+          <span class="score">${"★".repeat(Math.round(m.score / 2))} ${m.score}/10</span>
+        </div>
+        <p>${esc(m.description)}</p>
+        <div class="why">${esc(m.why)}</div>
+        <div class="moment-actions">
+          <button class="dl" data-i="${i}"><span class="spin"></span><span>⬇ Download</span></button>
+          <button class="ghost" data-seek="${m.start_sec}">▶ Preview</button>
+          <button class="ghost" data-edit="${i}">✎ Adjust times</button>
+          <span class="note"></span>
+        </div>
+      </div>`).join("");
+
+  const box = $("results");
+  box.querySelectorAll("[data-seek]").forEach(b => b.onclick = () => {
+    if (player && player.seekTo) { player.seekTo(+b.dataset.seek, true); player.playVideo(); $("preview").scrollIntoView({ behavior: "smooth", block: "center" }); }
+  });
+  box.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
+    const m = d.moments[+b.dataset.edit];
+    $("start").value = toStamp(m.start_sec); $("end").value = toStamp(m.end_sec); updateLength();
+    $("start").scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+  box.querySelectorAll(".dl").forEach(b => b.onclick = async () => {
+    const m = d.moments[+b.dataset.i], note = b.parentElement.querySelector(".note"), sp = b.querySelector(".spin");
+    b.disabled = true; sp.style.display = "block"; note.style.color = "";
+    note.textContent = restricted ? "Clipping… (the first clip downloads the full video once, later ones are fast)" : "Clipping…";
+    try { showSaved(note, "✓ ", await fetchClip(url, toStamp(m.start_sec), toStamp(m.end_sec))); }
+    catch (e) { note.textContent = e.message; note.style.color = "var(--err)"; }
+    finally { b.disabled = false; sp.style.display = "none"; }
+  });
+}
+
+$("modeSeg").querySelectorAll("button").forEach(b => b.onclick = () => {
+  mode = b.dataset.mode;
+  $("modeSeg").querySelectorAll("button").forEach(x => x.classList.toggle("active", x === b));
+});
+$("analyze").onclick = analyze;
+$("saveKey").onclick = saveKey;
+$("apiKey").addEventListener("keydown", e => { if (e.key === "Enter") saveKey(); });
+checkGemini();
+
+// ---------- YouTube sign-in ----------
+const ckNames = { none: "Off", file: "cookies.txt", firefox: "Firefox", brave: "Brave", edge: "Edge", chrome: "Chrome" };
+function ckStatus(src, ok) {
+  $("ckStatus").textContent = src === "none" ? "Off" : ckNames[src] + (ok === false ? " · problem" : " · on");
+  $("ckStatus").className = src !== "none" && ok !== false ? "pill on" : "pill";
+}
+function ckShow() {
+  const v = $("ckSource").value;
+  $("ckFileBox").style.display = v === "file" ? "block" : "none";
+  $("ckBrowserNote").style.display = ["chrome", "edge", "brave"].includes(v) ? "block" : "none";
+}
+async function ckLoad() {
+  const d = await (await fetch("/api/cookies")).json();
+  $("ckSource").value = d.source; ckShow(); ckStatus(d.source);
+}
+async function ckSave() {
+  const source = $("ckSource").value, body = { source }, m = $("ckMsg");
+  if (source === "file" && $("ckFile").files[0]) body.text = await $("ckFile").files[0].text();
+  $("ckSave").disabled = true; m.style.color = "var(--muted)"; m.textContent = "Checking…";
+  try {
+    const r = await fetch("/api/cookies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    ckStatus(d.source, d.ok);
+    if (d.ok === false) throw new Error(d.error);
+    m.style.color = ""; m.textContent = source === "none" ? "Sign-in turned off." : "✓ Saved. Now load the video again.";
+  } catch (e) { m.style.color = "var(--err)"; m.textContent = e.message; }
+  finally { $("ckSave").disabled = false; }
+}
+$("ckSource").onchange = ckShow;
+$("ckSave").onclick = ckSave;
+ckLoad();
+
+$("loadBtn").onclick = loadVideo;
+$("url").addEventListener("keydown", e => { if (e.key === "Enter") loadVideo(); });
+$("url").addEventListener("paste", () => setTimeout(loadVideo, 50));
+$("start").oninput = $("end").oninput = updateLength;
+$("go").onclick = download;
+document.querySelectorAll("[data-set]").forEach(b => b.onclick = () => {
+  if (!player || !player.getCurrentTime) return showMsg("Load a video first, then play to the spot you want.", "err");
+  $(b.dataset.set).value = toStamp(player.getCurrentTime());
+  updateLength();
+});
+</script>
+</body>
+</html>
