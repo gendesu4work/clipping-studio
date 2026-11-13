@@ -25,6 +25,21 @@ Requirements: Python 3.10+ (`pip install -r requirements.txt`) and `ffmpeg` on P
 
 Your keys and sign-ins stay on your PC and are git-ignored: the Gemini key (`.env`), YouTube cookies (`cookies.txt`), the Claude key (`config.json`) and `settings.json`. Enter them in the app.
 
+### Split layout (gaming clips)
+
+For 16:9 gameplay with a facecam in a corner, choose **Layout → Split · reaction cam + gameplay**. You can also type "gaming", "split" or "facecam" in the instructions.
+
+- **Top:** the reaction cam, with the same smooth face-follow.
+- **Bottom:** the gameplay.
+- **Captions** sit on the line between the two panels.
+- **Everything else is unchanged:** dead-air cuts, captions, music and loudness work the same as in Full frame.
+
+**Auto-detection.** It finds the face that stays in one place across the video (faces in the gameplay move around), then the facecam overlay's border. The gameplay crop slides sideways so the facecam doesn't show up inside it.
+
+**Box editor.** Drag the yellow (cam) and blue (gameplay) boxes on a frame of your video. Drag a box's corner dot to resize it. **Cam height** sets how much of the 9:16 frame the reaction cam takes. **Frame** picks which moment of the video to look at. The preview on the right shows the final layout.
+
+Command line: `python pipeline.py in.mp4 out.mp4 --layout split`
+
 ## Instructions
 
 - **Without an API key**, built-in rules handle:

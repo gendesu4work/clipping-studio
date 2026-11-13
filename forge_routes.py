@@ -145,7 +145,12 @@ def start():
     if not st or "video" not in st: return jsonify(error="Choose a video first."), 400
     if st.get("running"): return jsonify(error="Already editing."), 409
     o = body.get("options", {})
+    box = lambda b: [float(v) for v in b][:4] if isinstance(b, list) and len(b) == 4 else None
     s = pipeline.Settings(
+        layout="split" if o.get("layout") == "split" else "full",
+        split_ratio=float(o.get("split_ratio") or 0.42),
+        face_box=box(o.get("face_box")),
+        game_box=box(o.get("game_box")),
         aspect=o.get("aspect", "9:16") if o.get("aspect") in pipeline.ASPECTS else "9:16",
         captions=bool(o.get("captions", True)),
         caption_position=o.get("caption_position", "middle"),
@@ -173,6 +178,35 @@ def start():
 
     threading.Thread(target=work, daemon=True).start()
     return jsonify(ok=True)
+
+
+@bp.get("/api/forge/frame/<jid>")
+def frame(jid):
+    """A JPEG of the source video at ?t=seconds (for the split-layout box editor)."""
+    import cv2
+    job_dir(jid)
+    st = state.get(jid) or abort(404)
+    cap = cv2.VideoCapture(st["video"])
+    t = float(request.args.get("t", 0) or 0)
+    cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t) * 1000)
+    ok, f = cap.read(); cap.release()
+    if not ok: abort(404)
+    if f.shape[1] > 1280:
+        f = cv2.resize(f, (1280, int(f.shape[0] * 1280 / f.shape[1])), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return buf.tobytes(), 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store"}
+
+
+@bp.get("/api/forge/autobox/<jid>")
+def autobox(jid):
+    """Auto-detected facecam / gameplay boxes for the split layout (normalized 0-1)."""
+    job_dir(jid)
+    st = state.get(jid) or abort(404)
+    ratio = float(request.args.get("split", 0.42))
+    key = f"autobox_{ratio:.3f}"
+    if key not in st:
+        st[key] = pipeline.auto_boxes(st["video"], st["info"], ratio)
+    return jsonify(st[key])
 
 
 @bp.get("/api/status/<jid>")

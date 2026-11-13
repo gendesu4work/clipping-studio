@@ -39,6 +39,11 @@ class Settings:
     pad_end: float = 0.12
     words_per_page: int = 6
     whisper_model: str = "small"
+    # layout: "full" = one face-following crop; "split" = facecam on top, gameplay below (always 9:16)
+    layout: str = "full"
+    split_ratio: float = 0.42          # share of the height used by the facecam panel
+    face_box: list | None = None       # [x, y, w, h] normalized 0-1 in the source; None = auto
+    game_box: list | None = None
 
 
 @dataclass
@@ -130,14 +135,22 @@ def _crop_geometry(w, h, aspect):
     return dict(axis="y", cw=float(w), ch=w / target, ow=ow, oh=oh)
 
 
-def analyze(src, info, frame_ranges, job: Job):
-    """Pass 1: face centers + scene-cut flags for every kept frame."""
+def analyze(src, info, frame_ranges, job: Job, roi=None):
+    """Pass 1: face centers + scene-cut flags for every kept frame.
+    roi=(x0, y0, x1, y1) in source px limits face detection to that region
+    (used for the facecam in split layout)."""
     want = np.zeros(int(info["dur"] * info["fps"]) + 10, bool)
     for n0, n1 in frame_ranges: want[n0:n1] = True
     det_step = max(1, round(info["fps"] / 15))
     scale = 640 / max(info["w"], info["h"])
     dw, dh = int(info["w"] * scale), int(info["h"] * scale)
-    det = cv2.FaceDetectorYN.create(FACE_MODEL, "", (dw, dh), 0.6, 0.3, 50)
+    if roi:
+        rx0, ry0, rx1, ry1 = [int(round(v)) for v in roi]
+        rs = min(4.0, 640 / max(rx1 - rx0, ry1 - ry0))
+        rsize = (max(1, int((rx1 - rx0) * rs)), max(1, int((ry1 - ry0) * rs)))
+        det = cv2.FaceDetectorYN.create(FACE_MODEL, "", rsize, 0.55, 0.3, 20)
+    else:
+        det = cv2.FaceDetectorYN.create(FACE_MODEL, "", (dw, dh), 0.6, 0.3, 50)
     cap = cv2.VideoCapture(src)
     faces, cuts, prev_hist = {}, set(), None
     i, total = 0, int(want.sum())
@@ -150,17 +163,26 @@ def analyze(src, info, frame_ranges, job: Job):
         ok, f = cap.read()
         if not ok: break
         small = cv2.resize(f, (dw, dh), interpolation=cv2.INTER_AREA)
-        thumb = cv2.cvtColor(cv2.resize(small, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        # camera-switch detection: in split mode only watch the facecam (gameplay motion isn't a cut)
+        watch = f[ry0:ry1, rx0:rx1] if roi else small
+        thumb = cv2.cvtColor(cv2.resize(watch, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
         if prev_hist is not None and want[i] and float(np.mean(np.abs(thumb - prev_hist))) > 12:
             cuts.add(i)
         prev_hist = thumb
         if want[i]:
             if i % det_step == 0:
-                _, fs = det.detect(small)
-                if fs is not None and len(fs):
-                    # biggest confident face
-                    x, y, fw, fh = max(fs, key=lambda r: r[2] * r[3] * r[-1])[:4]
-                    faces[i] = ((x + fw / 2) / scale, (y + fh * 0.45) / scale, fh / scale)
+                if roi:
+                    crop = cv2.resize(f[ry0:ry1, rx0:rx1], rsize, interpolation=cv2.INTER_AREA)
+                    _, fs = det.detect(crop)
+                    if fs is not None and len(fs):
+                        x, y, fw, fh = max(fs, key=lambda r: r[2] * r[3] * r[-1])[:4]
+                        faces[i] = (rx0 + (x + fw / 2) / rs, ry0 + (y + fh * 0.45) / rs, fh / rs)
+                else:
+                    _, fs = det.detect(small)
+                    if fs is not None and len(fs):
+                        # biggest confident face
+                        x, y, fw, fh = max(fs, key=lambda r: r[2] * r[3] * r[-1])[:4]
+                        faces[i] = ((x + fw / 2) / scale, (y + fh * 0.45) / scale, fh / scale)
             done += 1
             if done % 30 == 0: job.stage("Tracking faces", done / max(total, 1))
         i += 1
@@ -170,14 +192,18 @@ def analyze(src, info, frame_ranges, job: Job):
 
 
 def camera_path(frames, faces, cuts, geo, info):
-    """Virtual camera: hold inside a deadzone, glide with a critically damped
-    spring when the subject leaves it, snap on camera switches/edit points."""
-    fps = info["fps"]
+    """Full-frame layout: pan along one axis to follow the face."""
     span = geo["cw"] if geo["axis"] == "x" else geo["ch"]
     full = info["w"] if geo["axis"] == "x" else info["h"]
-    lo, hi = span / 2, full - span / 2
     k = 0 if geo["axis"] == "x" else 1
     default = full / 2 if geo["axis"] == "x" else full * 0.4
+    return smooth_track(frames, faces, cuts, k, span, span / 2, full - span / 2, default, info["fps"])
+
+
+def smooth_track(frames, faces, cuts, k, span, lo, hi, default, fps):
+    """Virtual camera on one axis: hold inside a deadzone, glide with a critically
+    damped spring when the subject leaves it, snap on camera switches/edit points."""
+    if hi < lo: lo = hi = (lo + hi) / 2
     # split into shots
     shots, cur = [], []
     for j, n in enumerate(frames):
@@ -213,6 +239,132 @@ def camera_path(frames, faces, cuts, geo, info):
     return pos
 
 
+# ---------------------------------------------------------------- 3b. split layout (facecam + gameplay)
+def split_dims(split_ratio, ow=1080, oh=1920):
+    top_h = int(round(oh * min(0.6, max(0.25, split_ratio)) / 2)) * 2
+    return ow, top_h, oh - top_h
+
+
+def fit_aspect(box, aspect, w, h):
+    """Largest box with the given w/h aspect centred inside `box` (x, y, bw, bh in px), clamped to the frame."""
+    x, y, bw, bh = box
+    if bw / max(bh, 1) > aspect: nw, nh = bh * aspect, bh
+    else: nw, nh = bw, bw / aspect
+    nw, nh = min(nw, w, h * aspect), min(nh, h, w / aspect)
+    cx, cy = x + bw / 2, y + bh / 2
+    nx = min(max(cx - nw / 2, 0), w - nw); ny = min(max(cy - nh / 2, 0), h - nh)
+    return [nx, ny, nw, nh]
+
+
+def auto_boxes(src, info, split_ratio=0.42, samples=24):
+    """Guess where the facecam and the gameplay are. Returns normalized boxes.
+    The facecam face is the one that stays in the same place across the video;
+    faces in the gameplay move around, so we take the most frequent position."""
+    w, h = info["w"], info["h"]
+    ow, top_h, bot_h = split_dims(split_ratio)
+    a_top, a_bot = ow / top_h, ow / bot_h
+    scale = min(1.0, 1280 / max(w, h))
+    dw, dh = int(w * scale), int(h * scale)
+    det = cv2.FaceDetectorYN.create(FACE_MODEL, "", (dw, dh), 0.6, 0.3, 50)
+    cap = cv2.VideoCapture(src)
+    hits, grays = [], []
+    for k in range(samples):
+        cap.set(cv2.CAP_PROP_POS_MSEC, (k + 0.5) / samples * info["dur"] * 1000)
+        ok, f = cap.read()
+        if not ok: continue
+        small = cv2.resize(f, (dw, dh), interpolation=cv2.INTER_AREA)
+        grays.append(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY))
+        _, fs = det.detect(small)
+        for r in (fs if fs is not None else []):
+            x, y, fw, fh = r[:4] / scale
+            hits.append((x + fw / 2, y + fh / 2, fh, float(r[-1])))
+    cap.release()
+    found = bool(hits)
+    overlay = None
+    if hits:
+        # vote on a coarse grid, then take the median inside the winning cell
+        cell = lambda p: (int(p[0] / (w / 8)), int(p[1] / (h / 6)))
+        votes = {}
+        for p in hits: votes.setdefault(cell(p), []).append(p)
+        best = max(votes.values(), key=lambda v: (len(v), sum(p[3] for p in v)))
+        cx, cy, fh = (float(np.median([p[i] for p in best])) for i in range(3))
+        overlay = find_overlay(grays, cx * scale, cy * scale, fh * scale)
+        if overlay is not None:
+            ox, oy, ow_, oh_ = [v / scale for v in overlay]
+            bh = min(oh_, ow_ / a_top)              # biggest panel-shaped box inside the facecam
+            bx = min(max(cx - bh * a_top / 2, ox), ox + ow_ - bh * a_top)
+            by = min(max(cy - bh * 0.45, oy), oy + oh_ - bh)
+            face = [bx, by, bh * a_top, bh]
+        else:
+            bh = min(h, max(fh * 3.0, h * 0.2))
+            face = fit_aspect([cx - bh * a_top / 2, cy - bh * 0.45, bh * a_top, bh], a_top, w, h)
+    else:   # typical streamer layout: facecam bottom-left
+        bh = h * 0.4
+        face = fit_aspect([0, h - bh, bh * a_top, bh], a_top, w, h)
+    # gameplay: full height, centred - but slide sideways so the facecam overlay isn't in it
+    game = fit_aspect([0, 0, w, h], a_bot, w, h)
+    cam = [v / scale for v in overlay] if overlay is not None else face
+    gx, gw = game[0], game[2]
+    gap = w * 0.008                                  # clear the overlay's border line too
+    cam_l, cam_r = cam[0] - gap, cam[0] + cam[2] + gap
+    if gx < cam_r and gx + gw > cam_l:              # overlapping horizontally
+        if cam_l + cam[2] / 2 < w / 2 and cam_r + gw <= w: game[0] = cam_r
+        elif cam_l - gw >= 0: game[0] = cam_l - gw
+    n = lambda b: [b[0] / w, b[1] / h, b[2] / w, b[3] / h]
+    return dict(face_box=n(face), game_box=n(game), face_found=found, detections=len(hits),
+                overlay=n([v / scale for v in overlay]) if overlay is not None else None)
+
+
+def find_overlay(grays, cx, cy, fh):
+    """Find the facecam overlay rectangle around a face (all values in the downscaled frame).
+    Gameplay changes from frame to frame and blurs out in the median, while the overlay's
+    border stays put, so we look for the nearest strong straight edge on each side."""
+    med = np.median(np.stack(grays), axis=0).astype(np.float32)
+    H, W = med.shape
+    gx = np.abs(cv2.Sobel(med, cv2.CV_32F, 1, 0, ksize=3))
+    gy = np.abs(cv2.Sobel(med, cv2.CV_32F, 0, 1, ksize=3))
+    y0, y1 = int(max(0, cy - fh * 1.2)), int(min(H, cy + fh * 1.2))
+    x0, x1 = int(max(0, cx - fh * 1.2)), int(min(W, cx + fh * 1.2))
+    col = gx[y0:y1].mean(axis=0)      # vertical-edge strength per column (rows around the face)
+    row = gy[:, x0:x1].mean(axis=1)   # horizontal-edge strength per row
+
+    def nearest(profile, start, stop, step, limit):
+        idx = list(range(int(start), int(stop), step))
+        if not idx: return limit
+        vals = np.array([profile[i] for i in idx])
+        if vals.max() < max(12.0, 4 * np.median(profile)): return limit   # no clear border: frame edge
+        thr = 0.6 * vals.max()
+        for i, v in zip(idx, vals):
+            if v >= thr: return i
+        return limit
+
+    far = fh * 7
+    L = nearest(col, cx - fh * 0.9, max(0, cx - far) - 1, -1, 0)
+    R = nearest(col, cx + fh * 0.9, min(W, cx + far), 1, W)
+    T = nearest(row, cy - fh * 0.9, max(0, cy - far) - 1, -1, 0)
+    B = nearest(row, cy + fh * 1.1, min(H, cy + far), 1, H)
+    m = 3                                   # stay inside the border line itself
+    L, T = L + m if L > 0 else 0, T + m if T > 0 else 0
+    R, B = R - m if R < W else W, B - m if B < H else H
+    if R - L < fh * 1.5 or B - T < fh * 1.5: return None
+    return [L, T, R - L, B - T]
+
+
+def split_setup(src, info, s: Settings):
+    w, h = info["w"], info["h"]
+    ow, top_h, bot_h = split_dims(s.split_ratio)
+    boxes = None
+    if not (s.face_box and s.game_box):
+        boxes = auto_boxes(src, info, s.split_ratio)
+    fb = s.face_box or boxes["face_box"]
+    gb = s.game_box or boxes["game_box"]
+    px = lambda b: [b[0] * w, b[1] * h, b[2] * w, b[3] * h]
+    face = fit_aspect(px(fb), ow / top_h, w, h)
+    game = fit_aspect(px(gb), ow / bot_h, w, h)
+    return dict(layout="split", ow=ow, oh=1920, top_h=top_h, bot_h=bot_h, face=face, game=game,
+                auto=boxes)
+
+
 # ---------------------------------------------------------------- 4. captions (ASS)
 def _ass_color(rgb, alpha=0):
     r, g, b = rgb
@@ -230,8 +382,12 @@ def _esc(t):
 
 def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
     ow, oh = geo["ow"], geo["oh"]
-    fs = round(oh * 0.032) if s.aspect == "9:16" else round(oh * 0.036)
-    y = {"top": 0.22, "middle": 0.52, "bottom": 0.78}.get(s.caption_position, 0.52) * oh
+    fs = round(oh * 0.032) if ow / oh < 0.6 else round(oh * 0.036)
+    if geo.get("layout") == "split":   # "middle" sits on the seam between facecam and gameplay
+        th = geo["top_h"]
+        y = {"top": th * 0.16, "middle": th, "bottom": oh * 0.86}.get(s.caption_position, th)
+    else:
+        y = {"top": 0.22, "middle": 0.52, "bottom": 0.78}.get(s.caption_position, 0.52) * oh
     max_chars = 18 if ow / oh < 0.7 else 24
     # map source word times -> output timeline
     timeline, t_out = [], 0.0
@@ -298,6 +454,17 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
 def build_vignette(geo, path, strength=0.62):
     ow, oh = geo["ow"], geo["oh"]
     y = np.linspace(0, 1, oh)[:, None]
+    if geo.get("layout") == "split":
+        # soft dark band on the seam (where captions sit) + gentle top/bottom edges
+        seam = geo["top_h"] / oh
+        band = np.exp(-((y - seam) / 0.045) ** 2) * 0.42
+        bottom = np.clip((y - 0.8) / 0.2, 0, 1) ** 1.6 * 0.4
+        top = np.clip(1 - y / 0.1, 0, 1) ** 1.5 * 0.15
+        a = np.clip(band + bottom + top, 0, 0.85) * np.ones((1, ow))
+        img = np.zeros((oh, ow, 4), np.uint8)
+        img[..., 3] = (a * 255).astype(np.uint8)
+        cv2.imwrite(path, img)
+        return
     bottom = np.clip((y - 0.55) / 0.45, 0, 1) ** 1.6 * strength
     top = np.clip(1 - y / 0.14, 0, 1) ** 1.5 * 0.12
     x = np.linspace(-1, 1, ow)[None, :]
@@ -309,7 +476,45 @@ def build_vignette(geo, path, strength=0.62):
 
 
 # ---------------------------------------------------------------- 6. render
-def render(src, info, segments, pos, geo, s: Settings, workdir, out_path, music, use_captions, job: Job):
+def full_composer(pos, geo, info):
+    """Full layout: one face-following crop scaled to the output size."""
+    ow, oh, cw, ch = geo["ow"], geo["oh"], geo["cw"], geo["ch"]
+    sc = ow / cw
+
+    def compose(f, i):
+        c = pos.get(i)
+        if geo["axis"] == "x":
+            x0, y0 = (c if c is not None else info["w"] / 2) - cw / 2, 0.0
+        else:
+            x0, y0 = 0.0, (c if c is not None else info["h"] * 0.4) - ch / 2
+        M = np.float32([[sc, 0, -x0 * sc], [0, sc, -y0 * sc]])
+        return cv2.warpAffine(f, M, (ow, oh), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return compose
+
+
+def split_composer(px, py, geo, zoom):
+    """Split layout: face-following facecam crop on top, fixed gameplay crop below."""
+    ow, top_h, bot_h = geo["ow"], geo["top_h"], geo["bot_h"]
+    fx, fy, fw, fh = geo["face"]
+    win_w, win_h = fw / zoom, fh / zoom
+    gx, gy, gw, gh = geo["game"]
+    st, sg = ow / win_w, ow / gw
+    Mg = np.float32([[sg, 0, -gx * sg], [0, sg, -gy * sg]])
+    seam = np.zeros((4, ow, 3), np.uint8)
+
+    def compose(f, i):
+        cx = px.get(i, fx + fw / 2); cy = py.get(i, fy + fh / 2)
+        x0, y0 = cx - win_w / 2, cy - win_h / 2
+        Mt = np.float32([[st, 0, -x0 * st], [0, st, -y0 * st]])
+        top = cv2.warpAffine(f, Mt, (ow, top_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        bot = cv2.warpAffine(f, Mg, (ow, bot_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        out = np.vstack([top, bot])
+        out[top_h - 2:top_h + 2] = seam            # thin dark divider
+        return out
+    return compose
+
+
+def render(src, info, segments, compose, geo, s: Settings, workdir, out_path, music, use_captions, job: Job):
     fps = info["fps"]
     ow, oh = geo["ow"], geo["oh"]
     ranges = [(round(a * fps), round(b * fps)) for a, b, _ in segments]
@@ -359,8 +564,6 @@ def render(src, info, segments, pos, geo, s: Settings, workdir, out_path, music,
         for n in range(n0, n1): want[n] = True
     last = max(want) if want else 0
     cap = cv2.VideoCapture(src)
-    cw, ch = geo["cw"], geo["ch"]
-    sc = ow / cw
     i = written = 0
     try:
         while i <= last:
@@ -369,14 +572,8 @@ def render(src, info, segments, pos, geo, s: Settings, workdir, out_path, music,
                 i += 1; continue
             ok, f = cap.read()
             if not ok: break
-            c = pos.get(i)
-            if geo["axis"] == "x":
-                x0, y0 = (c if c is not None else info["w"] / 2) - cw / 2, 0.0
-            else:
-                x0, y0 = 0.0, (c if c is not None else info["h"] * 0.4) - ch / 2
-            M = np.float32([[sc, 0, -x0 * sc], [0, sc, -y0 * sc]])
-            frame = cv2.warpAffine(f, M, (ow, oh), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-            proc.stdin.write(frame.tobytes())
+            frame = compose(f, i)
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
             written += 1; i += 1
             if written % 20 == 0: job.stage("Rendering", written / max(n_out, 1))
         cap.release()
@@ -420,21 +617,35 @@ def edit(src, out_path, instructions="", settings: Settings | None = None, music
             f"({info['dur'] - kept:.1f}s of pauses/filler/off-topic removed).")
     job.stage("Planning the edit", 1)
 
-    geo = _crop_geometry(info["w"], info["h"], s.aspect)
     fps = info["fps"]
     ranges = [(round(a * fps), round(b * fps)) for a, b, _ in segments]
-    job.stage("Tracking faces", 0)
-    faces, cuts = analyze(src, info, ranges, job)
-    cuts |= {n0 for n0, _ in ranges}
     frames = [n for a, b in ranges for n in range(a, b)]
-    pos = camera_path(frames, faces, cuts, geo, info)
+    job.stage("Tracking faces", 0)
+    if s.layout == "split":
+        geo = split_setup(src, info, s)
+        if geo["auto"]:
+            job.log("Split layout: facecam " + ("found automatically" if geo["auto"]["face_found"]
+                    else "not found, using the bottom-left corner") + ".")
+        fx, fy, fw, fh = geo["face"]
+        faces, cuts = analyze(src, info, ranges, job, roi=(fx, fy, fx + fw, fy + fh))
+        cuts |= {n0 for n0, _ in ranges}
+        zoom = 1.12                      # crop slightly inside the facecam box so it has room to follow
+        ww, wh = fw / zoom, fh / zoom
+        px = smooth_track(frames, faces, cuts, 0, ww, fx + ww / 2, fx + fw - ww / 2, fx + fw / 2, fps)
+        py = smooth_track(frames, faces, cuts, 1, wh, fy + wh / 2, fy + fh - wh / 2, fy + fh / 2, fps)
+        compose = split_composer(px, py, geo, zoom)
+    else:
+        geo = _crop_geometry(info["w"], info["h"], s.aspect)
+        faces, cuts = analyze(src, info, ranges, job)
+        cuts |= {n0 for n0, _ in ranges}
+        compose = full_composer(camera_path(frames, faces, cuts, geo, info), geo, info)
 
     use_captions = s.captions
     if use_captions:
         n = build_ass(words, segments, plan, s, geo, os.path.join(workdir, "captions.ass"))
         job.log(f"Captions: {n} pages, {len(plan.highlights)} highlighted words.")
     job.stage("Rendering", 0)
-    render(src, info, segments, pos, geo, s, workdir, out_path, music, use_captions, job)
+    render(src, info, segments, compose, geo, s, workdir, out_path, music, use_captions, job)
     job.log(f"Done: {kept:.1f}s, {geo['ow']}x{geo['oh']}.")
     return dict(duration=kept, clips=len(segments), width=geo["ow"], height=geo["oh"])
 
@@ -446,5 +657,6 @@ if __name__ == "__main__":
     ap.add_argument("--instructions", default="")
     ap.add_argument("--music")
     ap.add_argument("--aspect", default="9:16")
+    ap.add_argument("--layout", default="full", choices=["full", "split"])
     a = ap.parse_args()
-    edit(a.src, a.out, a.instructions, Settings(aspect=a.aspect), a.music)
+    edit(a.src, a.out, a.instructions, Settings(aspect=a.aspect, layout=a.layout), a.music)

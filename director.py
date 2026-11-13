@@ -28,8 +28,9 @@ Decide:
 2. highlights: caption keywords to colour, about one per 5-7 kept words: the punchiest word or short phrase (each
    word of a phrase listed separately). Colours carry meaning: red = danger/negative/shocking, yellow = emphasis,
    green = positive/money/success, magenta = playful/flirty, orange = general energy, cyan = calm/tech.
-3. settings: apply anything the creator said about format (aspect ratio, captions on/off and position, vignette,
-   music). Use "keep" for anything they did not mention.
+3. settings: apply anything the creator said about format (aspect ratio, layout, captions on/off and position,
+   vignette, music). layout "split" = facecam/reaction on top and gameplay below (gaming clips); "full" = one
+   face-following crop. Use "keep" for anything they did not mention.
 Write a one-sentence summary of the edit you made."""
 
 SCHEMA = {
@@ -47,12 +48,13 @@ SCHEMA = {
             "type": "object",
             "properties": {
                 "aspect": {"type": "string", "enum": ["keep", "9:16", "3:4", "4:5", "1:1"]},
+                "layout": {"type": "string", "enum": ["keep", "full", "split"]},
                 "captions": {"type": "string", "enum": ["keep", "on", "off"]},
                 "caption_position": {"type": "string", "enum": ["keep", "top", "middle", "bottom"]},
                 "vignette": {"type": "string", "enum": ["keep", "on", "off"]},
                 "music": {"type": "string", "enum": ["keep", "on", "off"]},
             },
-            "required": ["aspect", "captions", "caption_position", "vignette", "music"],
+            "required": ["aspect", "layout", "captions", "caption_position", "vignette", "music"],
             "additionalProperties": False},
         "summary": {"type": "string"},
     },
@@ -82,6 +84,8 @@ def _apply_text_settings(text, s: Settings) -> Settings:
     if re.search(r"3\s*[:x/]\s*4", t): s = replace(s, aspect="3:4")
     if re.search(r"4\s*[:x/]\s*5", t): s = replace(s, aspect="4:5")
     if re.search(r"1\s*[:x/]\s*1|square", t): s = replace(s, aspect="1:1")
+    if re.search(r"split|face ?cam|webcam|gameplay|gaming|reaction (on )?top", t): s = replace(s, layout="split")
+    if re.search(r"full ?(frame|screen)|no split", t): s = replace(s, layout="full")
     if re.search(r"no (sub|caption)|without (sub|caption)|captions? off", t): s = replace(s, captions=False)
     if re.search(r"no vignette|without (a )?vignette|vignette off", t): s = replace(s, vignette=False)
     if re.search(r"no music|without music|music off", t): s = replace(s, music=False)
@@ -166,6 +170,7 @@ def make_plan(words, instructions, s: Settings, job, api_key=None):
         import anthropic  # noqa: F401
         plan, st = claude_plan(words, instructions or "", api_key, job)
         if st["aspect"] != "keep": s = replace(s, aspect=st["aspect"])
+        if st.get("layout", "keep") != "keep": s = replace(s, layout=st["layout"])
         if st["captions"] != "keep": s = replace(s, captions=st["captions"] == "on")
         if st["caption_position"] != "keep": s = replace(s, caption_position=st["caption_position"])
         if st["vignette"] != "keep": s = replace(s, vignette=st["vignette"] == "on")
