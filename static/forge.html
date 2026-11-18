@@ -70,6 +70,10 @@ textarea:focus{border-color:#4a5060}
 #pbar{display:block;height:6px}
 #log{margin-top:12px;max-height:180px;overflow:auto;font:12px/1.6 ui-monospace,Consolas,monospace;color:var(--dim);white-space:pre-wrap}
 #log .err{color:var(--red)}
+.ignored{margin-top:14px;padding:10px 12px;border:1px solid var(--accent);border-radius:10px;background:rgba(255,214,10,.08);font-size:13px}
+.ignored b{color:var(--accent)}
+.ignored ul{margin:6px 0;padding-left:18px}
+.ignored p{margin:0;color:var(--dim)}
 .result{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start}
 @media (max-width:600px){.result{grid-template-columns:1fr}}
 .result video{width:260px;max-width:100%;border-radius:12px;background:#000;display:block}
@@ -209,6 +213,7 @@ dialog p{color:var(--dim);font-size:14px;margin:6px 0}
             <a class="btn primary" id="dl" href="#">Download MP4</a>
             <button class="btn" id="again">Change instructions & re-edit</button>
           </div>
+          <div class="ignored hidden" id="ignored"></div>
           <p style="color:var(--dim);font-size:13px;margin-top:14px" id="summary"></p>
         </div>
       </div>
@@ -490,6 +495,15 @@ function showResult(s) {
     .map(([b, t]) => `<div class="stat"><b>${b}</b><span>${t}</span></div>`).join("");
   const plan = (s.log || []).find(l => l.includes("Plan: "));
   $("#summary").textContent = plan ? plan.split("Plan: ")[1] : "";
+  const ign = (s.log || []).find(l => l.startsWith("Ignored: "));
+  const box = $("#ignored");
+  box.classList.toggle("hidden", !ign);
+  if (ign) {
+    const esc = t => t.replace(/[<&>"]/g, c => ({"<": "&lt;", "&": "&amp;", ">": "&gt;", '"': "&quot;"}[c]));
+    box.innerHTML = `<b>⚠ These instructions were not applied:</b><ul>` +
+      ign.slice(9).split(" | ").map(p => `<li>${esc(p)}</li>`).join("") +
+      `</ul><p>Without an Anthropic API key, ClipForge only understands simple requests (length, format, layout, captions, music, vignette, pace). Click the <b>Claude off</b> button at the top to add a key and have these followed.</p>`;
+  }
   $("#resultCard").classList.remove("hidden");
   $("#resultCard").scrollIntoView({behavior: "smooth", block: "start"});
 }

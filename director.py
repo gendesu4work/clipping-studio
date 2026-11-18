@@ -78,26 +78,52 @@ def _transcript_text(words):
 
 
 # ------------------------------------------------------------------ rules
+LENGTH_RE = r"(\d+)\s*(s|sec|secs|second|seconds|min|minute|minutes)\b"
+
+# Phrases the built-in rules understand: (pattern, how it changes the settings).
+TEXT_RULES = [
+    (r"9\s*[:x/]\s*16|vertical|tiktok|reels?\b|shorts?\b", lambda s, m: replace(s, aspect="9:16")),
+    (r"3\s*[:x/]\s*4", lambda s, m: replace(s, aspect="3:4")),
+    (r"4\s*[:x/]\s*5", lambda s, m: replace(s, aspect="4:5")),
+    (r"1\s*[:x/]\s*1|square", lambda s, m: replace(s, aspect="1:1")),
+    (r"split|face ?cam|webcam|gameplay|gaming|reaction (on )?top", lambda s, m: replace(s, layout="split")),
+    (r"full ?(frame|screen)|no split", lambda s, m: replace(s, layout="full")),
+    (r"no (sub|caption)|without (sub|caption)|captions? off", lambda s, m: replace(s, captions=False)),
+    (r"no vignette|without (a )?vignette|vignette off", lambda s, m: replace(s, vignette=False)),
+    (r"no music|without music|music off", lambda s, m: replace(s, music=False)),
+    (r"captions?\s+(?:at|on|to)\s+(?:the\s+)?(top|middle|center|bottom)",
+     lambda s, m: replace(s, caption_position={"center": "middle"}.get(m.group(1), m.group(1)))),
+    (r"keep (the )?pauses|don'?t cut pauses|slower pace", lambda s, m: replace(s, max_pause=1.0)),
+    (r"tight|fast pace|snappy|aggressive", lambda s, m: replace(s, max_pause=0.2)),
+]
+# Also understood, but handled in rules_plan rather than as a setting.
+PLAN_RULES = [LENGTH_RE, r"filler|\bums?\b|\buhs?\b|stutter|pauses|silence"]
+# Words that carry no request on their own ("please", "make it", ...).
+NOISE = re.compile(r"^(please|pls|thanks?( you)?|thx|ok(ay)?|also|just|make it|do it|edit it|the video|this|again)$")
+
+
 def _apply_text_settings(text, s: Settings) -> Settings:
     t = text.lower()
-    if re.search(r"9\s*[:x/]\s*16|vertical|tiktok|reels?\b|shorts?\b", t): s = replace(s, aspect="9:16")
-    if re.search(r"3\s*[:x/]\s*4", t): s = replace(s, aspect="3:4")
-    if re.search(r"4\s*[:x/]\s*5", t): s = replace(s, aspect="4:5")
-    if re.search(r"1\s*[:x/]\s*1|square", t): s = replace(s, aspect="1:1")
-    if re.search(r"split|face ?cam|webcam|gameplay|gaming|reaction (on )?top", t): s = replace(s, layout="split")
-    if re.search(r"full ?(frame|screen)|no split", t): s = replace(s, layout="full")
-    if re.search(r"no (sub|caption)|without (sub|caption)|captions? off", t): s = replace(s, captions=False)
-    if re.search(r"no vignette|without (a )?vignette|vignette off", t): s = replace(s, vignette=False)
-    if re.search(r"no music|without music|music off", t): s = replace(s, music=False)
-    m = re.search(r"captions?\s+(?:at|on|to)\s+(?:the\s+)?(top|middle|center|bottom)", t)
-    if m: s = replace(s, caption_position={"center": "middle"}.get(m.group(1), m.group(1)))
-    if re.search(r"keep (the )?pauses|don'?t cut pauses|slower pace", t): s = replace(s, max_pause=1.0)
-    if re.search(r"tight|fast pace|snappy|aggressive", t): s = replace(s, max_pause=0.2)
+    for pat, apply in TEXT_RULES:
+        m = re.search(pat, t)
+        if m: s = apply(s, m)
     return s
 
 
+def ununderstood_parts(text):
+    """The pieces of the instructions that the built-in rules can't act on."""
+    patterns = [p for p, _ in TEXT_RULES] + PLAN_RULES
+    parts = re.split(r"[.;,!?\n]+|\s+(?:and|then|but|also)\s+", text)
+    out = []
+    for p in parts:
+        p = p.strip(" '\"-")
+        if len(p) < 3 or NOISE.match(p.lower()): continue
+        if not any(re.search(pat, p.lower()) for pat in patterns): out.append(p)
+    return out
+
+
 def _target_seconds(text):
-    m = re.search(r"(\d+)\s*(s|sec|secs|second|seconds|min|minute|minutes)\b", text.lower())
+    m = re.search(LENGTH_RE, text.lower())
     if not m: return None
     n = int(m.group(1))
     return n * 60 if m.group(2).startswith("min") else n
@@ -182,4 +208,8 @@ def make_plan(words, instructions, s: Settings, job, api_key=None):
         if "api_key" in msg.lower() or "auth" in msg.lower() or "credential" in msg.lower():
             msg = "no Anthropic API key set"
         job.log(f"Claude not used ({msg}); using built-in rules.")
-        return rules_plan(words, instructions or "", s), s
+        plan = rules_plan(words, instructions or "", s)
+        skipped = ununderstood_parts(instructions or "")
+        if skipped:
+            job.log("Ignored: " + " | ".join(skipped))
+        return plan, s
