@@ -54,12 +54,56 @@ function installCode() {
   log(`installed bundled code v${app.getVersion()} into ${ROOT}`);
 }
 
+// Python versions every package in requirements.txt ships ready-made Windows builds for.
+// Newer versions can work, but pip may have to compile packages and that fails on most PCs.
+const SUPPORTED_MINORS = [14, 13, 12, 11, 10]; // preferred order (3.15: no onnxruntime build yet)
+const MIN_MINOR = 10;
+
+// Returns { minor, bits } for a Python command, or null if it isn't a usable Python 3.
+function probePython(cmd, args) {
+  const r = spawnSync(cmd, [...args, "-c", "import sys,struct;print(sys.version_info[0],sys.version_info[1],struct.calcsize('P')*8)"],
+    { windowsHide: true, encoding: "utf8", timeout: 15000 });
+  const m = r.status === 0 && /^3 (\d+) (\d+)/.exec((r.stdout || "").trim());
+  return m ? { minor: +m[1], bits: +m[2] } : null;
+}
+
+// Finds a Python 3.10+ to build the environment with, preferring a supported 64-bit version.
+// Returns { cmd, args, version, supported } or null.
 function findSystemPython() {
-  for (const [cmd, args] of [["py", ["-3"]], ["python", []], ["python3", []]]) {
-    const r = spawnSync(cmd, [...args, "--version"], { windowsHide: true, encoding: "utf8" });
-    if (r.status === 0 && /Python 3\.(1\d|[2-9]\d)/.test((r.stdout || "") + (r.stderr || ""))) return [cmd, args];
+  const candidates = [
+    ...SUPPORTED_MINORS.map(m => ["py", [`-3.${m}`]]), // Python launcher: pick a specific version if installed
+    ["py", ["-3"]], ["python", []], ["python3", []],
+  ];
+  let fallback = null;
+  for (const [cmd, args] of candidates) {
+    const p = probePython(cmd, args);
+    if (!p || p.minor < MIN_MINOR) continue;
+    const found = { cmd, args, version: `3.${p.minor}`, supported: SUPPORTED_MINORS.includes(p.minor) && p.bits === 64 };
+    if (found.supported) return found;
+    if (!fallback) fallback = found;
   }
-  return null;
+  return fallback;
+}
+
+function venvVersion() {
+  try {
+    const m = /^version(?:_info)?\s*=\s*3\.(\d+)/m.exec(fs.readFileSync(path.join(ROOT, ".venv", "pyvenv.cfg"), "utf8"));
+    return m ? `3.${m[1]}` : null;
+  } catch { return null; }
+}
+
+// Last lines of studio.log, so the error box shows what actually went wrong.
+function logTail(lines = 12) {
+  try {
+    const file = path.join(ROOT, "studio.log");
+    const size = fs.statSync(file).size;
+    const fd = fs.openSync(file, "r");
+    const len = Math.min(size, 8000);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    fs.closeSync(fd);
+    return buf.toString("utf8").split(/\r?\n/).filter(l => l.trim()).slice(-lines).join("\n");
+  } catch { return ""; }
 }
 
 function run(cmd, args) {
@@ -71,26 +115,60 @@ function run(cmd, args) {
   });
 }
 
+const PYTHON_URL = "https://www.python.org/downloads/release/python-3146/"; // a known-good version
+
+function showSetupError(message, detail, offerPython) {
+  const buttons = offerPython ? ["Get Python 3.14", "Open log folder", "Close"] : ["Open log folder", "Close"];
+  const r = dialog.showMessageBoxSync({ type: "error", title: "Creator Studio", buttons, message, detail, noLink: true });
+  const choice = buttons[r];
+  if (choice === "Get Python 3.14") shell.openExternal(PYTHON_URL);
+  if (choice === "Open log folder") shell.openPath(ROOT);
+}
+
 // Installed app only: create .venv and install requirements the first time.
+// Shows its own error dialog and returns false if setup can't finish.
 async function ensureVenv() {
   if (!BUNDLED) return true;
-  const venvPy = path.join(ROOT, ".venv", "Scripts", "python.exe");
-  const ready = path.join(ROOT, ".venv", ".ready");
+  const venvDir = path.join(ROOT, ".venv");
+  const venvPy = path.join(venvDir, "Scripts", "python.exe");
+  const ready = path.join(venvDir, ".ready");
   if (fs.existsSync(ready)) return true;
   const py = findSystemPython();
   if (!py) {
-    const r = dialog.showMessageBoxSync({
-      type: "error", title: "Creator Studio", buttons: ["Get Python", "Close"],
-      message: "Creator Studio needs Python 3.10 or newer.",
-      detail: "Install Python from python.org (tick \"Add python.exe to PATH\"), then open Creator Studio again.",
-    });
-    if (r === 0) shell.openExternal("https://www.python.org/downloads/");
+    showSetupError("Creator Studio needs Python (3.14 recommended).",
+      "Install 64-bit Python 3.14 from python.org (tick \"Add python.exe to PATH\"), then open Creator Studio again.", true);
     return false;
   }
+  log(`setup: using Python ${py.version} (${py.cmd} ${py.args.join(" ")})${py.supported ? "" : " - not a tested version"}`);
+
+  // A half-finished environment from an earlier failed attempt, built with a different Python: start over.
+  if (fs.existsSync(venvDir) && venvVersion() !== py.version) {
+    log(`setup: removing old .venv (Python ${venvVersion()})`);
+    try { fs.rmSync(venvDir, { recursive: true, force: true }); } catch (e) { log(`setup: couldn't remove .venv: ${e}`); }
+  }
+
+  const fail = step => {
+    const hint = py.supported ? ""
+      : `You have Python ${py.version} (or 32-bit Python), which some packages don't support yet. ` +
+        "Install 64-bit Python 3.14 and open Creator Studio again.\n\n";
+    showSetupError(`First-time setup failed while ${step}.`,
+      `${hint}Last lines of studio.log:\n${logTail() || "(empty)"}\n\nFull log: ${path.join(ROOT, "studio.log")}`,
+      !py.supported);
+    return false;
+  };
+
   if (win) await win.loadURL(splashHtml("First-time setup: creating Python environment…"));
-  if (!fs.existsSync(venvPy) && !(await run(py[0], [...py[1], "-m", "venv", ".venv"]))) return false;
+  if (!fs.existsSync(venvPy) && !(await run(py.cmd, [...py.args, "-m", "venv", ".venv"])))
+    return fail("creating the Python environment");
   if (win) await win.loadURL(splashHtml("First-time setup: installing packages (this can take several minutes)…"));
-  if (!(await run(venvPy, ["-m", "pip", "install", "-q", "-r", "requirements.txt"]))) return false;
+  await run(venvPy, ["-m", "pip", "install", "-q", "--upgrade", "pip"]); // newer pip finds more ready-made packages; fine if it fails
+  let ok = await run(venvPy, ["-m", "pip", "install", "-q", "-r", "requirements.txt"]);
+  if (!ok) { // often a dropped download: try once more
+    log("setup: package install failed, retrying");
+    if (win) await win.loadURL(splashHtml("First-time setup: retrying package install…"));
+    ok = await run(venvPy, ["-m", "pip", "install", "-q", "-r", "requirements.txt"]);
+  }
+  if (!ok) return fail("installing packages");
   // Tell updater.py these requirements are installed so it doesn't reinstall them right away.
   const reqHash = crypto.createHash("sha256").update(fs.readFileSync(path.join(ROOT, "requirements.txt"))).digest("hex");
   fs.writeFileSync(path.join(ROOT, ".installed_requirements"), reqHash);
@@ -198,8 +276,6 @@ async function main() {
     return;
   }
   if (!(await ensureVenv())) {
-    if (fs.existsSync(path.join(ROOT, "studio.log")) && findSystemPython())
-      dialog.showErrorBox("Creator Studio", `Setup failed. See studio.log in:\n${ROOT}`);
     app.quit();
     return;
   }
