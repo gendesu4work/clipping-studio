@@ -10,9 +10,7 @@ from flask import send_from_directory
 
 from clipper import app          # the downloader's Flask app (its /api/* routes)
 from forge_routes import bp      # ClipForge + shared library routes
-import license
 
-license.init(app)                # needs a valid license key for this PC before anything else works
 app.register_blueprint(bp)
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
