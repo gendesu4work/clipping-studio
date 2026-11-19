@@ -13,7 +13,7 @@ The server keeps running after you close the window. To shut it down, run **`Sto
 
 Download **Creator-Studio-Setup.exe** from the [Releases](https://github.com/gendesu4work/clipping-studio/releases) page and run it. It adds Desktop and Start menu shortcuts.
 
-- **First launch** sets everything up in `%LOCALAPPDATA%\Creator Studiopp`: it creates a Python environment and installs the packages, which takes a few minutes. You need Python 3.10+ and `ffmpeg` on PATH.
+- **First launch** sets everything up in `%LOCALAPPDATA%\Creator Studio\app`: it creates a Python environment and installs the packages, which takes a few minutes. You need Python 3.10+ and `ffmpeg` on PATH.
 - **Every launch** checks GitHub for updates, starts the server in the background and opens the app window.
 - **Closing the window** stops the server.
 - **Your data** (keys, library, outputs) lives in that folder and is kept when you reinstall or upgrade.
