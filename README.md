@@ -11,10 +11,11 @@ The server keeps running after you close the window. To shut it down, run **`Sto
 
 ## Desktop app (Electron)
 
-Download **Creator-Studio-Setup.exe** from the [Releases](https://github.com/gendesu4work/clipping-studio/releases) page and run it. It adds Desktop and Start menu shortcuts.
+Download **Creator-Studio-Setup-x.y.z.exe** from the [latest release](https://github.com/gendesu4work/clipping-studio/releases/latest) and run it. It adds Desktop and Start menu shortcuts. You need Python 3.10+ (tick "Add python.exe to PATH" when installing it).
 
-- **First launch** sets everything up in `%LOCALAPPDATA%\Creator Studio\app`: it creates a Python environment and installs the packages, which takes a few minutes. You need Python 3.10+ and `ffmpeg` on PATH.
-- **Every launch** checks GitHub for updates, starts the server in the background and opens the app window.
+- **First launch** sets everything up in `%LOCALAPPDATA%\Creator Studio\app`: it creates a Python environment, installs the packages and downloads FFmpeg if your PC doesn't have it. This takes a few minutes.
+- **Every launch** checks GitHub for updates (and installs any new packages), starts the server in the background and opens the app window. To update, close the app and open it again; pressing F5 only reloads the page.
+- **The version badge** next to the Discord button shows your version: green is up to date, yellow is updating or needs a restart, red is out of date (click it to update).
 - **Closing the window** stops the server.
 - **Your data** (keys, library, outputs) lives in that folder and is kept when you reinstall or upgrade.
 
@@ -32,7 +33,7 @@ Drag in an interview or talking-head video, type what you want, and get back a v
 
 ## Run
 
-Requirements: Python 3.10+ (`pip install -r requirements.txt`) and `ffmpeg` on PATH.
+Requirements: Python 3.10+ (`pip install -r requirements.txt`). If `ffmpeg` isn't on PATH, the app downloads its own copy the first time it starts.
 
 Your keys and sign-ins stay on your PC and are git-ignored: the Gemini key (`.env`), YouTube cookies (`cookies.txt`), the Claude key (`config.json`) and `settings.json`. Enter them in the app.
 
@@ -69,6 +70,8 @@ Command line: `python pipeline.py in.mp4 out.mp4 --layout split`
 - `server.py`: the combined server. `static/index.html` is the two-tab shell.
 - `clipper.py` + `static/clipper.html`: the YouTube clip downloader.
 - `forge_routes.py` + `static/forge.html`: ClipForge and the shared clip library.
+- `updater.py`: pulls the latest version from GitHub on each launch and installs new packages.
+- `ffmpeg_tools.py`: downloads FFmpeg on PCs that don't have it.
 - `library/`: every downloaded clip.
 - `jobs/`: uploads and finished edits.
 - `models/`: the YuNet face detector.
