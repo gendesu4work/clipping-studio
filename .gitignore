@@ -26,3 +26,7 @@ backgrounds/*.mp4
 
 .venv/
 .claude/
+
+# electron
+node_modules/
+dist/

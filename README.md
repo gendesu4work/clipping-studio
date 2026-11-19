@@ -9,6 +9,17 @@ Open it with the **Creator Studio** shortcut (on the Desktop, in the Start menu,
 
 The server keeps running after you close the window. To shut it down, run **`Stop Creator Studio.pyw`**. `Start Creator Studio.cmd` still works too: it runs the server in a console window, which is useful for seeing errors. Background logs go to `studio.log`.
 
+## Desktop app (Electron)
+
+Download **Creator-Studio-Setup.exe** from the [Releases](https://github.com/gendesu4work/clipping-studio/releases) page and run it. It adds Desktop and Start menu shortcuts.
+
+- **First launch** sets everything up in `%LOCALAPPDATA%\Creator Studiopp`: it creates a Python environment and installs the packages, which takes a few minutes. You need Python 3.10+ and `ffmpeg` on PATH.
+- **Every launch** checks GitHub for updates, starts the server in the background and opens the app window.
+- **Closing the window** stops the server.
+- **Your data** (keys, library, outputs) lives in that folder and is kept when you reinstall or upgrade.
+
+From a clone of this repo: `npm install`, then `npm start` to run the app, `npm run shortcut` to make shortcuts that open it, or `npm run dist` to build the installer into `dist/`.
+
 ## ClipForge
 
 Drag in an interview or talking-head video, type what you want, and get back a vertical short in the same style as the reference video. You get:
