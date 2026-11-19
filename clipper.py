@@ -117,6 +117,12 @@ def friendly_error(e: Exception) -> str:
     msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
     low = msg.lower()
     src = cookie_source()
+    if "requested format is not available" in low:
+        if not DENO:
+            return ("YouTube only offered preview images because the video helper (Deno) is missing. "
+                    "Restart Creator Studio so it can finish installing packages, then try again.")
+        return ("YouTube didn't offer any downloadable video for this link. Restart Creator Studio to "
+                "get the latest downloader, or connect your YouTube sign-in below and try again.")
     if "not a bot" in low:
         return "YouTube thinks this is a bot. Connect your YouTube sign-in below and try again."
     if "sign in to confirm" in low or ("age" in low and "inappropriate" in low) or "members-only" in low or "private video" in low:

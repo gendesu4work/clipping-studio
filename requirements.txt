@@ -4,7 +4,8 @@ numpy
 faster-whisper
 av<19  # av 19 removed open(metadata_errors=...), which faster-whisper 1.2 uses
 anthropic
-yt-dlp
+yt-dlp[default]>=2026.10.26  # [default] adds yt-dlp-ejs, the YouTube challenge solver
+deno  # JavaScript runtime yt-dlp needs to unlock YouTube video formats
 google-genai
 pydantic
 pillow
