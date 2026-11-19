@@ -149,32 +149,77 @@ function toast(t) {
   clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
-// version badge: shows the version and whether this copy matches the latest on GitHub
+// version badge + auto-update. The server checks GitHub and downloads updates by itself;
+// this page applies a downloaded update once nobody is using the app (no clicks/typing for a
+// minute and nothing downloading or rendering), then reloads on the new version.
 const verBtn = document.getElementById("ver");
-let verState = "unknown", verTimer;
+const IDLE_MS = 60e3;
+let ver = { state: "unknown" }, verTimer, lastActivity = Date.now(), applying = false;
+
+const markActive = () => { lastActivity = Date.now(); };
+function watchActivity(doc) {
+  ["pointerdown", "keydown", "input", "wheel"].forEach(ev => doc.addEventListener(ev, markActive, { passive: true, capture: true }));
+}
+watchActivity(document);
+Object.values(frames).forEach(f => {
+  const hook = () => { try { watchActivity(f.contentDocument); } catch (e) {} };
+  f.addEventListener("load", hook); hook();
+});
+
+function paintVersion(v) {
+  verBtn.dataset.state = applying ? "updating" : v.state;
+  document.getElementById("verText").textContent = (v.version ? "v" + v.version : "version") + (v.sha ? " · " + v.sha : "");
+  const msg = applying ? "Installing the update…" : v.message;
+  verBtn.title = msg + (v.state === "outdated" && v.latest ? ` (latest: ${v.latest})` : "");
+  verBtn.setAttribute("aria-label", "App version " + (v.version || "") + ": " + msg);
+}
+
 async function checkVersion(refresh) {
   clearTimeout(verTimer);
   try {
-    const v = await (await fetch("/api/version" + (refresh ? "?refresh=1" : ""))).json();
-    verState = v.state;
-    verBtn.dataset.state = v.state;
-    document.getElementById("verText").textContent = (v.version ? "v" + v.version : "version") + (v.sha ? " · " + v.sha : "");
-    verBtn.title = v.message + (v.state === "outdated" && v.latest ? ` (latest: ${v.latest})` : "");
-    verBtn.setAttribute("aria-label", "App version " + (v.version || "") + ": " + v.message);
+    ver = await (await fetch("/api/version" + (refresh ? "?refresh=1" : ""))).json();
+    paintVersion(ver);
+    if (ver.state === "outdated") fetch("/api/update", { method: "POST" });            // download it now
+    if (ver.state === "restart" && ver.can_restart && !ver.busy && Date.now() - lastActivity > IDLE_MS)
+      applyUpdate();
   } catch (e) {
     verBtn.dataset.state = "unknown"; verBtn.title = "Couldn't check for updates.";
   }
-  verTimer = setTimeout(checkVersion, verState === "updating" ? 2000 : 5 * 60e3);
+  const soon = ["updating", "outdated", "restart"].includes(ver.state);
+  verTimer = setTimeout(checkVersion, soon ? 5000 : 60e3);
 }
-verBtn.onclick = async () => {
-  if (verState === "outdated") {
-    await fetch("/api/update", { method: "POST" });
-    toast("Updating Creator Studio…");
-    checkVersion();
-  } else if (verState === "restart") {
+
+async function applyUpdate() {
+  if (applying) return;
+  const r = await fetch("/api/restart", { method: "POST" }).catch(() => null);
+  if (!r || !r.ok) {
+    const err = r ? (await r.json().catch(() => ({}))).error : null;
+    if (err) toast(err);
+    return;
+  }
+  applying = true; paintVersion(ver);
+  toast("Installing the update… back in a few seconds.");
+  const oldSha = ver.sha;
+  for (let i = 0; i < 120; i++) {            // wait for the fresh server (up to 2 minutes)
+    await new Promise(res => setTimeout(res, 1000));
+    try {
+      const v = await (await fetch("/api/version")).json();
+      if (v.sha !== oldSha) { location.reload(); return; }
+    } catch (e) {}                           // server is restarting
+  }
+  applying = false; checkVersion();
+}
+
+verBtn.onclick = () => {
+  if (ver.state === "restart" && ver.can_restart) {
+    applyUpdate();
+  } else if (ver.state === "restart") {
     toast("Close and reopen Creator Studio to finish the update.");
+  } else if (ver.state === "updating" || ver.state === "outdated") {
+    toast("Updating automatically…");
+    checkVersion();
   } else {
-    toast(verState === "current" ? "You're on the latest version." : "Checking for updates…");
+    toast(ver.state === "current" ? "You're on the latest version." : "Checking for updates…");
     checkVersion(true);
   }
 };

@@ -15,7 +15,8 @@ Download **Creator-Studio-Setup-x.y.z.exe** from the [latest release](https://gi
 
 - **First launch** sets everything up in `%LOCALAPPDATA%\Creator Studio\app`: it creates a Python environment, installs the packages and downloads FFmpeg if your PC doesn't have it. This takes a few minutes.
 - **Every launch** checks GitHub for updates (and installs any new packages), starts the server in the background and opens the app window. To update, close the app and open it again; pressing F5 only reloads the page.
-- **The version badge** next to the Discord button shows your version: green is up to date, yellow is updating or needs a restart, red is out of date (click it to update).
+- **Updates install themselves while the app is open.** It checks GitHub every 5 minutes and downloads new versions right away. Once nothing is downloading or rendering and you haven't clicked or typed for a minute, it restarts its background server (a few seconds) and reloads the page.
+- **The version badge** next to the Discord button shows your version: green is up to date, yellow is downloading or waiting for you to be idle (click it to install now), red is out of date.
 - **Closing the window** stops the server.
 - **Your data** (keys, library, outputs) lives in that folder and is kept when you reinstall or upgrade.
 
