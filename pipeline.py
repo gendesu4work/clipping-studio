@@ -73,7 +73,16 @@ class Job:
 
 # ---------------------------------------------------------------- helpers
 def run(cmd, **kw):
-    r = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except FileNotFoundError:
+        if cmd[0] not in ("ffmpeg", "ffprobe"):
+            raise
+        from ffmpeg_tools import ensure_ffmpeg
+        if not ensure_ffmpeg():  # first run on a PC without ffmpeg: fetch it, then retry
+            raise RuntimeError("FFmpeg isn't installed and couldn't be downloaded automatically. "
+                               "Check your internet connection and restart Creator Studio.") from None
+        r = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if r.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed:\n{r.stderr[-2000:]}")
     return r.stdout

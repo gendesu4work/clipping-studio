@@ -19,6 +19,7 @@ fonts/
 
 # auto-updater state
 .update_version
+.installed_requirements
 
 # rendered videos (personal, large)
 outputs/

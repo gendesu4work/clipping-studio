@@ -26,6 +26,8 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+from ffmpeg_tools import ensure_ffmpeg
+
 app = Flask(__name__, static_folder="static")
 
 QUALITY_FORMATS = {
@@ -704,7 +706,8 @@ def video_encoder() -> list[str]:
     """NVIDIA GPU encoding when it works on this PC (several times faster), else fast CPU x264."""
     global _encoder
     if _encoder is None:
-        _encoder = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        ensure_ffmpeg()  # PCs without ffmpeg: wait for the private copy before using it
+        _encoder =["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
         try:
             r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                                 "color=s=1280x720", "-frames:v", "5", "-c:v", "h264_nvenc", "-f", "null", "-"],

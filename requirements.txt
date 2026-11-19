@@ -9,3 +9,4 @@ deno  # JavaScript runtime yt-dlp needs to unlock YouTube video formats
 google-genai
 pydantic
 pillow
+static-ffmpeg  # downloads ffmpeg + ffprobe on PCs that don't have them

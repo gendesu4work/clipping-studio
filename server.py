@@ -10,8 +10,10 @@ from flask import send_from_directory
 
 from clipper import app          # the downloader's Flask app (its /api/* routes)
 from forge_routes import bp      # ClipForge + shared library routes
+from ffmpeg_tools import ensure_ffmpeg_in_background
 
 app.register_blueprint(bp)
+ensure_ffmpeg_in_background()    # PCs without ffmpeg get a private copy on first start
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 

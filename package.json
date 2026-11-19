@@ -1,7 +1,7 @@
 {
   "name": "creator-studio",
   "productName": "Creator Studio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Creator Studio desktop app (Electron shell around the local Python server)",
   "main": "electron/main.js",
   "private": true,

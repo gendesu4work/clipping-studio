@@ -4,6 +4,7 @@
 // Closing the window stops the server it started.
 const { app, BrowserWindow, shell, dialog, Menu } = require("electron");
 const { spawn, spawnSync } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
@@ -90,6 +91,12 @@ async function ensureVenv() {
   if (!fs.existsSync(venvPy) && !(await run(py[0], [...py[1], "-m", "venv", ".venv"]))) return false;
   if (win) await win.loadURL(splashHtml("First-time setup: installing packages (this can take several minutes)…"));
   if (!(await run(venvPy, ["-m", "pip", "install", "-q", "-r", "requirements.txt"]))) return false;
+  // Tell updater.py these requirements are installed so it doesn't reinstall them right away.
+  const reqHash = crypto.createHash("sha256").update(fs.readFileSync(path.join(ROOT, "requirements.txt"))).digest("hex");
+  fs.writeFileSync(path.join(ROOT, ".installed_requirements"), reqHash);
+  // ffmpeg isn't a pip package: fetch a private copy now (skipped if it's already on PATH).
+  if (win) await win.loadURL(splashHtml("First-time setup: downloading FFmpeg…"));
+  await run(venvPy, ["-c", "import ffmpeg_tools, sys; sys.exit(0 if ffmpeg_tools.ensure_ffmpeg() else 1)"]);
   fs.writeFileSync(ready, new Date().toISOString());
   return true;
 }
@@ -111,7 +118,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function runUpdater() {
   // Same updater the old launcher used; never let it block the app from opening.
   try {
-    const r = spawnSync(pythonExe(), ["updater.py"], { cwd: ROOT, timeout: 120000, windowsHide: true, encoding: "utf8" });
+    const r = spawnSync(pythonExe(), ["updater.py"], { cwd: ROOT, timeout: 600000, windowsHide: true, encoding: "utf8" }); // may pip-install new packages
     return (r.stdout || "").includes("updated") && !(r.stdout || "").includes("already");
   } catch (e) {
     log(`updater failed: ${e}`);

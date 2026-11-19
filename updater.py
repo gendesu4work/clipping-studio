@@ -33,7 +33,7 @@ NO_WINDOW = 0x08000000
 # never overwritten by a zip update (personal data / runtime state)
 PROTECTED = {
     ".env", "cookies.txt", "config.json", "settings.json", "license.key", "signing_key.pem",
-    "studio.log", ".update_version",
+    "studio.log", ".update_version", ".installed_requirements",
 }
 PROTECTED_DIRS = {"jobs", "library", "outputs", "fonts", ".git", ".venv", "venv", "__pycache__"}
 
@@ -166,7 +166,6 @@ def update() -> bool:
     if s.get("auto_update") is False:
         return False
     req_file = os.path.join(HERE, "requirements.txt")
-    req_before = _file_hash(req_file)
     try:
         if os.path.isdir(os.path.join(HERE, ".git")) and shutil.which("git"):
             changed = _update_git()
@@ -176,14 +175,34 @@ def update() -> bool:
     except Exception as e:
         _log(f"update error: {e}")
         return False
-    if changed and _file_hash(req_file) != req_before:
-        _log("requirements.txt changed, installing packages")
-        try:
-            r = _run([_python_exe(), "-m", "pip", "install", "-q", "-r", req_file], timeout=900)
-            _log("packages installed" if r.returncode == 0 else f"pip failed: {r.stderr.strip()[-500:]}")
-        except Exception as e:
-            _log(f"pip failed: {e}")
+    _install_packages(req_file)
     return changed
+
+
+REQS_DONE_FILE = os.path.join(HERE, ".installed_requirements")
+
+
+def _install_packages(req_file: str) -> None:
+    """pip install whenever requirements.txt differs from the last one that installed OK,
+    so a failed or interrupted install is retried on the next launch."""
+    want = _file_hash(req_file)
+    try:
+        with open(REQS_DONE_FILE, encoding="utf-8") as f:
+            if f.read().strip() == want:
+                return
+    except OSError:
+        pass
+    _log("requirements.txt changed, installing packages")
+    try:
+        r = _run([_python_exe(), "-m", "pip", "install", "-q", "-r", req_file], timeout=900)
+        if r.returncode == 0:
+            with open(REQS_DONE_FILE, "w", encoding="utf-8") as f:
+                f.write(want or "")
+            _log("packages installed")
+        else:
+            _log(f"pip failed: {r.stderr.strip()[-500:]}")
+    except Exception as e:
+        _log(f"pip failed: {e}")
 
 
 if __name__ == "__main__":
