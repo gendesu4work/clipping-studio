@@ -127,8 +127,6 @@ TEXT_RULES = [
     (r"split|face ?cam|webcam|gameplay|gaming|reaction (on )?top", lambda s, m: replace(s, layout="split")),
     (r"full ?(frame|screen)|no split", lambda s, m: replace(s, layout="full")),
     (r"meme ?frame|black (frame|border|bars)|framed", lambda s, m: replace(s, layout="framed")),
-    (r"heavy|lots of (effects|edits)|crazy edit|zooms?\b|circles?\b|arrows?\b|emojis?\b|shakes?\b|flash",
-     lambda s, m: replace(s, heavy=True)),
     (r"no (sub|caption)|without (sub|caption)|captions? off", lambda s, m: replace(s, captions=False)),
     (r"no vignette|without (a )?vignette|vignette off", lambda s, m: replace(s, vignette=False)),
     (r"no music|without music|music off", lambda s, m: replace(s, music=False)),
@@ -138,7 +136,10 @@ TEXT_RULES = [
     (r"tight|fast pace|snappy|aggressive", lambda s, m: replace(s, max_pause=0.2)),
 ]
 # Also understood, but handled in rules_plan rather than as a setting.
-PLAN_RULES = [LENGTH_RE, r"filler|\bums?\b|\buhs?\b|stutter|pauses|silence"]
+# Heavy edit is only the app's switch: if wording turned it on, unticking the switch and editing again
+# would still give a heavy edit whenever the instructions mention zooms, emojis or the heavy chip's text.
+HEAVY_RE = r"heavy|lots of (effects|edits)|crazy edit|zooms?\b|circles?\b|arrows?\b|emojis?\b|shakes?\b|flash"
+PLAN_RULES = [LENGTH_RE, r"filler|\bums?\b|\buhs?\b|stutter|pauses|silence", HEAVY_RE]
 # Words that carry no request on their own ("please", "make it", ...).
 NOISE = re.compile(r"^(please|pls|thanks?( you)?|thx|ok(ay)?|also|just|make it|do it|edit it|the video|this|again)$")
 
@@ -271,7 +272,9 @@ def brief_text(instructions, s: Settings):
     if moments:
         out += ("\n\nMUST-SHOW moments (always keep these, even if it makes the video longer, and make them stand "
                 "out):\n" + "\n".join(moments))
-    out += "\n\nHEAVY EDIT: " + ("ON - fill effects with lots of beats." if s.heavy else "off - effects must be [].")
+    out += "\n\nHEAVY EDIT: " + ("ON - fill effects with lots of beats." if s.heavy else
+                                 "OFF (the creator switched it off in the app) - effects must be [], ignore any "
+                                 "zoom/circle/arrow/emoji/heavy-edit wording above, and don't list it as unsupported.")
     if s.layout == "framed" and not s.title.strip():
         out += "\nThe video uses the framed layout: write a short hook title for the top (hook.text)."
     return out

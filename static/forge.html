@@ -447,7 +447,14 @@ function savePrefs() {
   try { localStorage.setItem("forge.prefs", JSON.stringify({heavy: $("#heavy").checked, handle: $("#frameHandle").value})); } catch {}
 }
 try { const p = JSON.parse(localStorage.getItem("forge.prefs") || "{}"); $("#heavy").checked = !!p.heavy; $("#frameHandle").value = p.handle || ""; } catch {}
-$("#heavy").addEventListener("change", savePrefs);
+$("#heavy").addEventListener("change", () => {
+  // switching heavy off also takes the 🔥 chip's sentence back out of the instructions
+  if (!$("#heavy").checked) {
+    const chip = document.querySelector(".chip[data-heavy]"), t = $("#instr");
+    if (chip && t.value.includes(chip.dataset.t)) t.value = t.value.replace(chip.dataset.t, "").replace(/\s{2,}/g, " ").trim();
+  }
+  savePrefs();
+});
 $("#frameHandle").addEventListener("change", savePrefs);
 
 // uploads (raw body + progress)

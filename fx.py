@@ -92,45 +92,66 @@ class Effects:
     def _seg_index(self, t):
         return sum(1 for c in self.cuts if c <= t)
 
-    def apply(self, img, face, t):
-        if not self.heavy: return img
-        y0, y1 = self.region or (0, img.shape[0])
-        part = img[y0:y1]
+    def _zoom_shake(self, part, cx0, cy0, t, base, punch):
+        """Zoom (alternating slight punch between cuts + eased punch-ins) and shake one panel.
+        Returns the new panel (or None if untouched) and the transform for points inside it."""
         ph, pw = part.shape[:2]
-        fx, fy, fs = face if face else (pw / 2, ph * 0.42, pw * 0.15)
-        fy -= y0
-        # 1) zoom: alternate a slight punch between jump cuts + eased punch-ins on emphasis
-        z = 1.0 + (0.07 if self._seg_index(t) % 2 else 0.0)
+        z = 1.0 + (base if self._seg_index(t) % 2 else 0.0)
         for e in self._active(t, ("zoom",), post=0.22):
             u = t - e["t"]
             if u < 0.12: k = _ease_out_back(max(0, u) / 0.12)
             elif t > e["end"]: k = max(0.0, 1 - (t - e["end"]) / 0.22)
             else: k = 1.0
-            z = max(z, 1.0 + 0.2 * k)
+            z = max(z, 1.0 + punch * k)
         dx = dy = 0.0
         for e in self._active(t, ("shake",)):
             amp = 22 * max(0.0, 1 - (t - e["t"]) / max(0.05, e["end"] - e["t"]))
             dx += self.rng.uniform(-amp, amp); dy += self.rng.uniform(-amp, amp)
-        if z > 1.001 or dx or dy:
-            cx = min(max(fx, pw / (2 * z)), pw - pw / (2 * z))
-            cy = min(max(fy, ph / (2 * z)), ph - ph / (2 * z))
-            M = np.float32([[z, 0, pw / 2 - cx * z + dx], [0, z, ph / 2 - cy * z + dy]])
-            part = cv2.warpAffine(part, M, (pw, ph), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-            # the subject moved with the zoom
-            fx, fy, fs = (fx - cx) * z + pw / 2 + dx, (fy - cy) * z + ph / 2 + dy, fs * z
-            img[y0:y1] = part                 # composers hand us a fresh frame, so editing in place is safe
+        if not (z > 1.001 or dx or dy): return None, None
+        cx = min(max(cx0, pw / (2 * z)), pw - pw / (2 * z))
+        cy = min(max(cy0, ph / (2 * z)), ph - ph / (2 * z))
+        M = np.float32([[z, 0, pw / 2 - cx * z + dx], [0, z, ph / 2 - cy * z + dy]])
+        out = cv2.warpAffine(part, M, (pw, ph), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        return out, (lambda x, y, s: ((x - cx) * z + pw / 2 + dx, (y - cy) * z + ph / 2 + dy, s * z))
+
+    def apply(self, img, face, t):
+        if not self.heavy: return img
+        split = self.region is not None
+        y0, y1 = self.region or (0, img.shape[0])
+        part = img[y0:y1]
+        ph, pw = part.shape[:2]
+        fx, fy, fs = face if face else (pw / 2, ph * 0.42, pw * 0.15)
+        fy -= y0
+        # 1) zoom + shake. Split: the facecam is already a tight crop, so it only gets a gentle punch
+        #    (a big one turns it to mush); the gameplay below gets the real punch-ins, around its centre.
+        new, move = self._zoom_shake(part, fx, fy, t, 0.0 if split else 0.07, 0.08 if split else 0.2)
+        if new is not None:
+            img[y0:y1] = new                  # composers hand us a fresh frame, so editing in place is safe
+            fx, fy, fs = move(fx, fy, fs)
             part = img[y0:y1]
-        # 2) red circle + arrow, drawn on around the subject
+        game = None
+        if split and y1 < img.shape[0]:
+            game = img[y1:]
+            gh, gw = game.shape[:2]
+            new, _ = self._zoom_shake(game, gw / 2, gh / 2, t, 0.07, 0.18)
+            if new is not None:
+                img[y1:] = new; game = img[y1:]
+        # 2) red circle + arrow, drawn on around the subject (the face in the facecam)
         for e in self._active(t, ("circle",)):
             self._circle_arrow(part, fx, fy, fs, t, e)
-        # 3) emoji pops
+        # 3) emoji pops: next to the face, or over the gameplay in split so the small facecam isn't crowded
         for e in self._active(t, ("emoji",)):
             k = _pop(t, e["t"], e["end"] - e["t"])
-            em = emoji_image(e.get("emoji") or "🔥", int(pw * 0.2))
-            if em is not None:
+            wob = math.sin((t - e["t"]) * 9) * 0.04
+            if game is not None:
+                gh, gw = game.shape[:2]
+                em = emoji_image(e.get("emoji") or "🔥", int(gw * 0.2))
+                side = 0.8 if int(e["t"] * 10) % 2 else 0.2       # alternate corners
+                paste(game, em, gw * side, gh * 0.22, scale=k * (1 + wob))
+            else:
+                em = emoji_image(e.get("emoji") or "🔥", int(pw * 0.2))
                 ex = min(max(fx + fs * 0.9, pw * 0.15), pw * 0.85)
                 ey = min(max(fy + fs * 0.8, ph * 0.15), ph * 0.85)
-                wob = math.sin((t - e["t"]) * 9) * 0.04
                 paste(part, em, ex, ey, scale=k * (1 + wob))
         # 4) white flash on cuts and flash events
         fl = 0.0
@@ -150,7 +171,7 @@ class Effects:
         rgb = self.colors.get(e.get("color") or "red", (255, 40, 40))
         col = (rgb[2], rgb[1], rgb[0])
         ph, pw = part.shape[:2]
-        r = int(min(max(fs * 1.05, pw * 0.09), pw * 0.2))
+        r = int(min(max(fs * 1.05, pw * 0.09), pw * 0.2, ph * 0.3))
         fx = min(max(fx, r * 1.1), pw - r * 1.1); fy = min(max(fy, r * 1.1), ph - r * 1.1)
         th = max(6, int(pw * 0.011))
         over = part.copy()
