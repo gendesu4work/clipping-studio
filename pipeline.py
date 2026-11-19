@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field, asdict
@@ -31,6 +32,7 @@ class Settings:
     aspect: str = "9:16"
     captions: bool = True
     caption_position: str = "middle"   # top | middle | bottom
+    caption_font: str = "arialbd.ttf"  # id from font_catalog(): a Windows font file or one added to fonts/
     vignette: bool = True
     music: bool = True                 # only used if a music file is supplied
     music_level_db: float = -12.0      # music bed relative to the voice
@@ -56,8 +58,11 @@ class Word:
 @dataclass
 class Plan:
     keep: list = field(default_factory=list)        # [(from_idx, to_idx)] inclusive
+    keep_times: list = field(default_factory=list)  # [(start_s, end_s)] - when set, used instead of keep
     highlights: dict = field(default_factory=dict)  # word idx -> color name
     summary: str = ""
+    hook: dict | None = None                        # {"text", "glow_words", "color", "seconds"} or None
+    unsupported: list = field(default_factory=list)  # requests the editor couldn't carry out
 
 
 class Job:
@@ -106,7 +111,15 @@ def transcribe(src, job: Job, settings: Settings, dur: float):
 
 # ---------------------------------------------------------------- 2. cut list
 def build_segments(words, plan: Plan, s: Settings, dur: float):
-    """Kept words -> list of (start, end, [word indices]) with dead air removed."""
+    """Kept words -> list of (start, end, [word indices]) with dead air removed.
+
+    A time-based plan (from a model that watched the video) is kept as-is, silent action included."""
+    if plan.keep_times:
+        out = []
+        for a, b in plan.keep_times:
+            idx = [i for i, w in enumerate(words) if a <= (w.start + w.end) / 2 < b]
+            out.append((a, b, idx))
+        return out
     kept = sorted({i for a, b in plan.keep for i in range(a, b + 1) if 0 <= i < len(words)})
     segs = []
     for i in kept:
@@ -366,6 +379,55 @@ def split_setup(src, info, s: Settings):
 
 
 # ---------------------------------------------------------------- 4. captions (ASS)
+USER_FONTS = os.path.join(HERE, "fonts")          # fonts the creator added
+FONT_EXT = (".ttf", ".otf")
+SYSTEM_FONTS = ["arialbd.ttf", "ariblk.ttf", "impact.ttf", "seguibl.ttf", "verdanab.ttf",
+                "trebucbd.ttf", "tahomabd.ttf", "calibrib.ttf", "georgiab.ttf", "comicbd.ttf"]
+_font_cache = {}
+
+
+def font_info(path):
+    """(family, bold, display name) read from the font file's name table."""
+    key = (path, os.path.getmtime(path))
+    if key not in _font_cache:
+        import io
+        from fontTools.ttLib import TTFont
+        with open(path, "rb") as fh:           # read into memory so Windows never keeps the file locked
+            data = fh.read()
+        names = TTFont(io.BytesIO(data), fontNumber=0)["name"]
+        fam = str(names.getDebugName(1) or os.path.splitext(os.path.basename(path))[0])
+        sub = str(names.getDebugName(2) or "Regular")
+        bold = "bold" in sub.lower()
+        _font_cache[key] = (fam, bold, fam if sub.lower() in ("regular", "normal", "bold") else f"{fam} {sub}")
+    return _font_cache[key]
+
+
+def font_catalog():
+    """[{id, name, family, bold, path, custom}] - system caption fonts first, then the creator's own."""
+    out, sysdir = [], os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts")
+    for fn in SYSTEM_FONTS:
+        p = os.path.join(sysdir, fn)
+        if os.path.exists(p):
+            fam, bold, name = font_info(p)
+            out.append(dict(id=fn, name=name, family=fam, bold=bold, path=p, custom=False))
+    if os.path.isdir(USER_FONTS):
+        for fn in sorted(os.listdir(USER_FONTS), key=str.lower):
+            p = os.path.join(USER_FONTS, fn)
+            if fn.lower().endswith(FONT_EXT):
+                try:
+                    fam, bold, name = font_info(p)
+                except Exception:
+                    continue
+                out.append(dict(id="user:" + fn, name=name, family=fam, bold=bold, path=p, custom=True))
+    return out
+
+
+def resolve_font(font_id):
+    cat = font_catalog()
+    return next((f for f in cat if f["id"] == font_id), None) or (cat[0] if cat else
+            dict(id="", name="Arial", family="Arial", bold=True, path=None, custom=False))
+
+
 def _ass_color(rgb, alpha=0):
     r, g, b = rgb
     return f"&H{alpha:02X}{b:02X}{g:02X}{r:02X}"
@@ -380,14 +442,54 @@ def _esc(t):
     return t.replace("\\", "").replace("{", "(").replace("}", ")")
 
 
+def _hook_event(hook, ow, y, fs, total, t):
+    """The hook title: big bold text at the top, chosen words glowing in a colour, popping in at the start."""
+    hs = round(fs * 1.3)
+    max_chars = 16
+    glow = {re.sub(r"[^\w]", "", w.lower()) for g in hook["glow_words"] for w in g.split()}
+    glow.discard("")
+    col = _bgr(COLORS.get(hook["color"], COLORS["yellow"]))
+    # Two layers with identical layout: a blurred colour halo behind the glowing words, then crisp text on top.
+    halo, text, line_len = [], [], 0
+    hidden = r"{\alpha&HFF&}"
+    for word in hook["text"].upper().split():
+        word = _esc(word)
+        if line_len and line_len + 1 + len(word) > max_chars:
+            halo.append(r"\N"); text.append(r"\N"); line_len = 0
+        elif line_len:
+            halo.append(" "); text.append(" "); line_len += 1
+        if re.sub(r"[^\w]", "", word.lower()) in glow:
+            halo.append("{" + rf"\1a&H60&\1c{col}\3a&H10&\3c{col}\4a&HFF&" + "}" + word + hidden)
+            text.append("{" + rf"\1c{col}" + "}" + word + r"{\1c&HFFFFFF&}")
+        else:
+            halo.append(hidden + word)
+            text.append(word)
+        line_len += len(word)
+    end = total if not hook["seconds"] else min(total, hook["seconds"])
+    pop = r"\fscx70\fscy70\t(0,160,\fscx106\fscy106)\t(160,260,\fscx100\fscy100)"
+    base = rf"\an8\pos({ow / 2:.0f},{y:.0f})\fad(120,250)\fs{hs}" + pop
+    halo_head = "{" + base + rf"\bord{hs * 0.26:.1f}\blur{hs * 0.55:.1f}" + "}"
+    text_head = "{" + base + (rf"\1c&HFFFFFF&\3c&H000000&\bord{hs * 0.07:.1f}\shad{hs * 0.05:.1f}"
+                              rf"\4a&H60&\blur{hs * 0.04:.1f}") + "}"
+    rows = []
+    if glow:
+        rows.append(f"Dialogue: 1,{t(0)},{t(end)},Cap,,0,0,0,,{halo_head}{''.join(halo)}")
+    rows.append(f"Dialogue: 2,{t(0)},{t(end)},Cap,,0,0,0,,{text_head}{''.join(text)}")
+    return "\n".join(rows)
+
+
 def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
     ow, oh = geo["ow"], geo["oh"]
+    font = resolve_font(s.caption_font)
     fs = round(oh * 0.032) if ow / oh < 0.6 else round(oh * 0.036)
     if geo.get("layout") == "split":   # "middle" sits on the seam between facecam and gameplay
         th = geo["top_h"]
         y = {"top": th * 0.16, "middle": th, "bottom": oh * 0.86}.get(s.caption_position, th)
     else:
         y = {"top": 0.22, "middle": 0.52, "bottom": 0.78}.get(s.caption_position, 0.52) * oh
+    hook_y = oh * 0.10
+    if plan.hook and s.caption_position == "top":
+        y = max(y, oh * 0.24)   # keep top captions clear of the hook title
     max_chars = 18 if ow / oh < 0.7 else 24
     # map source word times -> output timeline
     timeline, t_out = [], 0.0
@@ -396,6 +498,7 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
             w = words[i]
             timeline.append((i, t_out + max(0, w.start - a), t_out + min(b - a, w.end - a)))
         t_out += b - a
+    total = t_out
     # pages
     pages, cur = [], []
     for j, (i, st, en) in enumerate(timeline):
@@ -415,10 +518,12 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
         "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
         "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Cap,Arial,{fs},&H00FFFFFF,&H00FFFFFF,&H90000000,&H80000000,-1,0,0,0,100,100,{fs * 0.16:.1f},0,1,{fs * 0.05:.1f},{fs * 0.07:.1f},5,40,40,0,1",
+        f"Style: Cap,{font['family'].replace(',', ' ')},{fs},&H00FFFFFF,&H00FFFFFF,&H90000000,&H80000000,{-1 if font['bold'] else 0},0,0,0,100,100,{fs * 0.16:.1f},0,1,{fs * 0.05:.1f},{fs * 0.07:.1f},5,40,40,0,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    for p, page in enumerate(pages):
+    if plan.hook:
+        lines.append(_hook_event(plan.hook, ow, hook_y, fs, total, t))
+    for p, page in enumerate(pages if s.captions else []):
         start = page[0][1]
         nxt = pages[p + 1][0][1] if p + 1 < len(pages) else page[-1][2] + 0.8
         end = min(nxt, page[-1][2] + 0.8)
@@ -536,9 +641,8 @@ def render(src, info, segments, compose, geo, s: Settings, workdir, out_path, mu
         fc.append("[0:v]null[v0]")
     if use_captions:
         fonts = os.path.join(workdir, "fonts"); os.makedirs(fonts, exist_ok=True)
-        for fn in ("arialbd.ttf", "arial.ttf"):
-            p = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", fn)
-            if os.path.exists(p): shutil.copy(p, fonts)
+        font = resolve_font(s.caption_font)
+        if font["path"]: shutil.copy(font["path"], fonts)
         fc.append("[v0]ass=captions.ass:fontsdir=fonts,format=yuv420p[v]")
     else:
         fc.append("[v0]format=yuv420p[v]")
@@ -588,7 +692,7 @@ def render(src, info, segments, compose, geo, s: Settings, workdir, out_path, mu
 
 # ---------------------------------------------------------------- orchestration
 def edit(src, out_path, instructions="", settings: Settings | None = None, music=None, job: Job | None = None,
-         api_key=None):
+         claude=None):
     from director import make_plan
     job = job or Job()
     s = settings or Settings()
@@ -602,12 +706,13 @@ def edit(src, out_path, instructions="", settings: Settings | None = None, music
 
     words = transcribe(src, job, s, info["dur"])
     if not words:
-        raise RuntimeError("No speech found in the video.")
+        job.log("No speech found; planning from the picture only.")
     with open(os.path.join(workdir, "transcript.json"), "w", encoding="utf-8") as f:
         json.dump([asdict(w) for w in words], f, indent=1)
 
     job.stage("Planning the edit", 0)
-    plan, s = make_plan(words, instructions, s, job, api_key=api_key)
+    plan, s = make_plan(words, instructions, s, job, claude=claude,
+                        video=dict(src=src, workdir=workdir, dur=info["dur"]))
     if plan.summary: job.log("Plan: " + plan.summary)
     segments = build_segments(words, plan, s, info["dur"])
     if not segments:
@@ -640,10 +745,12 @@ def edit(src, out_path, instructions="", settings: Settings | None = None, music
         cuts |= {n0 for n0, _ in ranges}
         compose = full_composer(camera_path(frames, faces, cuts, geo, info), geo, info)
 
-    use_captions = s.captions
+    use_captions = s.captions or bool(plan.hook)
     if use_captions:
         n = build_ass(words, segments, plan, s, geo, os.path.join(workdir, "captions.ass"))
-        job.log(f"Captions: {n} pages, {len(plan.highlights)} highlighted words.")
+        if s.captions: job.log(f"Captions: {n} pages, {len(plan.highlights)} highlighted words.")
+        if plan.hook: job.log(f"Hook text: \"{plan.hook['text']}\"" +
+                              (f" (glowing: {', '.join(plan.hook['glow_words'])})" if plan.hook["glow_words"] else ""))
     job.stage("Rendering", 0)
     render(src, info, segments, compose, geo, s, workdir, out_path, music, use_captions, job)
     job.log(f"Done: {kept:.1f}s, {geo['ow']}x{geo['oh']}.")

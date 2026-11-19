@@ -16,6 +16,7 @@ import pipeline
 HERE = os.path.dirname(os.path.abspath(__file__))
 JOBS = os.path.join(HERE, "jobs")
 LIBRARY = os.path.join(HERE, "library")
+OUTPUTS = os.path.join(HERE, "outputs")      # finished ClipForge edits, kept across restarts
 CONFIG = os.path.join(HERE, "config.json")
 VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
 os.makedirs(JOBS, exist_ok=True)
@@ -82,7 +83,7 @@ def library_list():
 
 @bp.get("/api/library/file/<path:name>")
 def library_file(name):
-    return send_file(library_path(name), conditional=True)
+    return send_file(library_path(name), conditional=True, as_attachment=request.args.get("dl") == "1")
 
 
 @bp.delete("/api/library/file/<path:name>")
@@ -109,6 +110,114 @@ def from_library():
     except Exception as e:
         return jsonify(error=f"Could not read that video: {e}"), 400
     return jsonify(job=jid, name=st["video_name"], info=st["info"])
+
+
+# ------------------------------------------------------------- my shorts (saved outputs)
+def _unique(folder, base, ext):
+    final, n = base + ext, 2
+    while os.path.exists(os.path.join(folder, final)):
+        final = f"{base} ({n}){ext}"; n += 1
+    return final
+
+
+def _put(src, dst):
+    try:
+        os.link(src, dst)          # same disk: instant, no extra space
+    except OSError:
+        shutil.copyfile(src, dst)
+
+
+def save_output(path, source_name, instructions, result, created=None):
+    """Keep a finished edit in outputs/ with a readable name + a small .json of details."""
+    base = os.path.splitext(source_name or "Short")[0] + " (ClipForge)"
+    base = re.sub(r'[\\/:*?"<>|]', "_", base)[:150]
+    final = _unique(OUTPUTS, base, ".mp4")
+    _put(path, os.path.join(OUTPUTS, final))
+    meta = dict(source=source_name or "", instructions=instructions or "",
+                created=created or time.time(), **{k: (result or {}).get(k) for k in ("duration", "width", "height", "clips")})
+    with open(os.path.join(OUTPUTS, final[:-4] + ".json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    return final
+
+
+def _import_old_jobs():
+    """On startup, bring in edits still sitting in jobs/ that My shorts hasn't seen yet
+    (made before this tab existed, or by an older server). Each one is imported only once."""
+    os.makedirs(OUTPUTS, exist_ok=True)
+    seen_file = os.path.join(OUTPUTS, ".imported.json")
+    try:
+        with open(seen_file, encoding="utf-8") as f: seen = set(json.load(f))
+    except Exception:
+        seen = set()
+    added = False
+    for jid in sorted(os.listdir(JOBS)):
+        d = os.path.join(JOBS, jid)
+        if not os.path.isdir(d): continue
+        for fn in sorted(os.listdir(d)):
+            m = re.fullmatch(r"edit_(\d+)\.mp4", fn)
+            key = f"{jid}/{fn}"
+            if not m or key in seen: continue
+            try:
+                p = os.path.join(d, fn)
+                info = pipeline.probe(p)
+                stamp = time.strftime("%Y-%m-%d %H-%M", time.localtime(int(m.group(1))))
+                save_output(p, f"Short {stamp}.mp4", "", dict(duration=info.get("dur"), width=info.get("w"),
+                            height=info.get("h")), created=os.path.getmtime(p))
+            except Exception as e:
+                print("Could not import old edit", key, e)
+            seen.add(key); added = True
+    if added:
+        with open(seen_file, "w", encoding="utf-8") as f: json.dump(sorted(seen), f)
+
+
+def _mark_imported(path):
+    seen_file = os.path.join(OUTPUTS, ".imported.json")
+    try:
+        with open(seen_file, encoding="utf-8") as f: seen = json.load(f)
+    except Exception:
+        seen = []
+    seen.append(os.path.basename(os.path.dirname(path)) + "/" + os.path.basename(path))
+    with open(seen_file, "w", encoding="utf-8") as f: json.dump(sorted(set(seen)), f)
+
+
+_import_old_jobs()
+
+
+def output_path(name):
+    name = os.path.basename(name or "")
+    p = os.path.join(OUTPUTS, name)
+    if not name.lower().endswith(".mp4") or not os.path.isfile(p): abort(404)
+    return p
+
+
+@bp.get("/api/outputs")
+def outputs_list():
+    items = []
+    for fn in os.listdir(OUTPUTS):
+        p = os.path.join(OUTPUTS, fn)
+        if not (fn.lower().endswith(".mp4") and os.path.isfile(p)): continue
+        meta = {}
+        try:
+            with open(p[:-4] + ".json", encoding="utf-8") as f: meta = json.load(f)
+        except Exception:
+            pass
+        items.append(dict(meta, name=fn, size=os.path.getsize(p), created=meta.get("created") or os.path.getmtime(p)))
+    items.sort(key=lambda x: -x["created"])
+    return jsonify(items=items)
+
+
+@bp.get("/api/outputs/file/<path:name>")
+def outputs_file(name):
+    return send_file(output_path(name), conditional=True, mimetype="video/mp4",
+                     as_attachment=request.args.get("dl") == "1")
+
+
+@bp.delete("/api/outputs/file/<path:name>")
+def outputs_delete(name):
+    p = output_path(name)
+    os.remove(p)
+    if os.path.exists(p[:-4] + ".json"): os.remove(p[:-4] + ".json")
+    return jsonify(ok=True)
 
 
 # ------------------------------------------------------------- forge
@@ -154,6 +263,7 @@ def start():
         aspect=o.get("aspect", "9:16") if o.get("aspect") in pipeline.ASPECTS else "9:16",
         captions=bool(o.get("captions", True)),
         caption_position=o.get("caption_position", "middle"),
+        caption_font=str(o.get("caption_font") or "arialbd.ttf"),
         vignette=bool(o.get("vignette", True)),
         music=bool(o.get("music", True)),
         max_pause={"relaxed": 0.6, "normal": 0.35, "tight": 0.2}.get(o.get("pace"), 0.35),
@@ -167,8 +277,13 @@ def start():
         with render_lock:
             try:
                 res = pipeline.edit(st["video"], out, instructions, s, st.get("music"), job,
-                                    api_key=load_config().get("anthropic_api_key") or None)
+                                    claude=claude_settings())
                 st.update(output=os.path.basename(out), result=res, stage="Done", progress=1)
+                try:
+                    st["saved_as"] = save_output(out, st.get("video_name"), instructions, res)
+                    _mark_imported(out)
+                except Exception as e:
+                    job.log(f"Could not save to My shorts: {e}")
             except Exception as e:
                 st["error"] = str(e)
                 job.log("ERROR: " + str(e))
@@ -177,6 +292,51 @@ def start():
                 st.update(done=True, running=False)
 
     threading.Thread(target=work, daemon=True).start()
+    return jsonify(ok=True)
+
+
+# ---------- caption fonts ----------
+def _font(fid):
+    return next((f for f in pipeline.font_catalog() if f["id"] == fid), None) or abort(404)
+
+
+@bp.get("/api/fonts")
+def fonts_list():
+    return jsonify(fonts=[{k: f[k] for k in ("id", "name", "custom")} for f in pipeline.font_catalog()])
+
+
+@bp.get("/api/fonts/file/<path:fid>")
+def fonts_file(fid):
+    return send_file(_font(fid)["path"], max_age=86400)
+
+
+@bp.post("/api/fonts")
+def fonts_add():
+    f = request.files.get("file")
+    if not f or not f.filename: return jsonify(error="Choose a font file."), 400
+    name = re.sub(r"[^\w.\- ()]", "_", os.path.basename(f.filename)).strip() or "font.ttf"
+    if not name.lower().endswith(pipeline.FONT_EXT):
+        return jsonify(error="Fonts must be .ttf or .otf files."), 400
+    os.makedirs(pipeline.USER_FONTS, exist_ok=True)
+    base, ext = os.path.splitext(name); final, n = name, 2
+    while os.path.exists(os.path.join(pipeline.USER_FONTS, final)):
+        final = f"{base} ({n}){ext}"; n += 1
+    dest = os.path.join(pipeline.USER_FONTS, final)
+    f.save(dest)
+    try:
+        pipeline.font_info(dest)
+    except Exception:
+        os.remove(dest)
+        return jsonify(error="That file isn't a readable font."), 400
+    return jsonify(font=next({k: x[k] for k in ("id", "name", "custom")}
+                             for x in pipeline.font_catalog() if x["id"] == "user:" + final))
+
+
+@bp.delete("/api/fonts/<path:fid>")
+def fonts_remove(fid):
+    f = _font(fid)
+    if not f["custom"]: return jsonify(error="Built-in fonts can't be removed."), 400
+    os.remove(f["path"])
     return jsonify(ok=True)
 
 
@@ -213,7 +373,7 @@ def autobox(jid):
 def status(jid):
     job_dir(jid)
     st = state.get(jid) or abort(404)
-    return jsonify({k: st.get(k) for k in ("stage", "progress", "log", "done", "error", "output", "result", "running")})
+    return jsonify({k: st.get(k) for k in ("stage", "progress", "log", "done", "error", "output", "result", "running", "saved_as")})
 
 
 @bp.get("/api/file/<jid>/<name>")
@@ -228,17 +388,40 @@ def file(jid, name):
                      as_attachment=request.args.get("dl") == "1")
 
 
+def claude_settings():
+    c = load_config()
+    return {"api_key": c.get("anthropic_api_key") or None,
+            "base_url": c.get("anthropic_base_url") or None,
+            "model": c.get("anthropic_model") or None}
+
+
 @bp.get("/api/config")
 def get_config():
     c = load_config()
-    return jsonify(has_key=bool(c.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")))
+    return jsonify(has_key=bool(c.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")),
+                   base_url=c.get("anthropic_base_url", ""), model=c.get("anthropic_model", ""))
 
 
 @bp.post("/api/config")
 def set_config():
+    from director import check_key
     c = load_config()
-    key = (request.get_json(force=True).get("anthropic_api_key") or "").strip()
-    if key: c["anthropic_api_key"] = key
-    else: c.pop("anthropic_api_key", None)
+    body = request.get_json(force=True)
+    if body.get("clear"):
+        for k in ("anthropic_api_key", "anthropic_base_url", "anthropic_model"): c.pop(k, None)
+    else:
+        key = (body.get("anthropic_api_key") or "").strip() or c.get("anthropic_api_key", "")
+        base = (body.get("base_url") or "").strip().rstrip("/")
+        model = (body.get("model") or "").strip()
+        if base and not base.startswith(("http://", "https://")): base = "https://" + base
+        if not key:
+            return jsonify(error="Paste an API key first."), 400
+        err = check_key({"api_key": key, "base_url": base or None, "model": model or None})
+        if err:
+            return jsonify(error=err), 400
+        c["anthropic_api_key"] = key
+        for k, v in (("anthropic_base_url", base), ("anthropic_model", model)):
+            if v: c[k] = v
+            else: c.pop(k, None)
     with open(CONFIG, "w", encoding="utf-8") as f: json.dump(c, f)
-    return jsonify(ok=True, has_key=bool(key))
+    return jsonify(ok=True, has_key=bool(c.get("anthropic_api_key")))

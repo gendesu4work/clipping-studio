@@ -101,6 +101,13 @@ textarea:focus{border-color:#4a5060}
 .pv{display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--dim);font-size:12px}
 .pv canvas{width:162px;height:288px;border-radius:10px;background:#000;border:1px solid var(--line)}
 .seg.disabled{opacity:.4;pointer-events:none}
+.fontrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fontrow select{flex:1;min-width:160px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:8px 10px;font:inherit;font-size:14px}
+.fontrow .ghost{font-size:13px;padding:7px 12px}
+#fontPreview{margin-top:10px;background:#111;border-radius:10px;padding:14px;text-align:center;color:#fff;font-size:26px;line-height:1.2;
+  text-transform:uppercase;letter-spacing:.04em;text-shadow:0 2px 4px #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#fontPreview b{color:#ffe600;font-weight:inherit;text-shadow:0 0 12px #ffe600aa}
+#fontMsg{font-size:12.5px;color:var(--dim);margin-top:6px;min-height:1em}
 .lib{margin-top:18px}
 .lib-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .lib-head h2{margin:0}
@@ -115,6 +122,11 @@ dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);bo
 dialog::backdrop{background:#000a}
 dialog input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:10px 12px;font:inherit;margin:10px 0}
 dialog p{color:var(--dim);font-size:14px;margin:6px 0}
+dialog details{margin:4px 0 2px;font-size:14px}
+dialog summary{cursor:pointer;color:var(--dim)}
+dialog summary:hover{color:var(--text)}
+dialog .keymsg{min-height:1em;font-size:13px}
+dialog .keymsg.err{color:var(--red)} dialog .keymsg.ok{color:var(--green)}
 .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;margin-left:6px}
 .pill.ok{background:#173a28;color:var(--green)} .pill.no{background:var(--panel2);color:var(--dim)}
 </style>
@@ -166,6 +178,12 @@ dialog p{color:var(--dim);font-size:14px;margin:6px 0}
           <div class="seg" data-k="pace"><button data-v="relaxed">Relaxed</button><button data-v="normal" class="on">Normal</button><button data-v="tight">Tight</button></div></div>
         <div class="opt"><label class="t">Captions</label>
           <div class="seg" data-k="caption_position"><button data-v="off">Off</button><button data-v="top">Top</button><button data-v="middle" class="on">Middle</button><button data-v="bottom">Bottom</button></div></div>
+        <div class="opt" style="grid-column:1/-1"><label class="t">Caption font <span style="opacity:.7">(captions + hook title)</span></label>
+          <div class="fontrow"><select id="fontSel"></select>
+            <button class="ghost" id="fontAdd" title="Add a .ttf or .otf font">+ Add font</button>
+            <button class="ghost hidden" id="fontDel" title="Remove this added font">Remove</button></div>
+          <input type="file" id="fontFile" accept=".ttf,.otf" multiple hidden>
+          <div id="fontPreview">This is <b>how</b> it looks</div><div id="fontMsg"></div></div>
         <div class="opt"><label class="t">Look</label>
           <label class="tog"><input type="checkbox" id="vignette" checked><span class="sw"></span>Vignette</label></div>
         <div class="opt" style="grid-column:1/-1"><label class="t">Background music <span style="opacity:.7">(optional, auto-ducked under the voice)</span></label>
@@ -224,7 +242,15 @@ dialog p{color:var(--dim);font-size:14px;margin:6px 0}
 <dialog id="dlg">
   <h3 style="margin:0 0 6px">Claude director</h3>
   <p>With an Anthropic API key, Claude reads the transcript and follows your instructions: picks the best story, cuts tangents, and colors keywords by meaning. Without a key, built-in rules remove pauses, filler and stutters and handle simple requests (length, format, captions on/off).</p>
-  <input id="key" type="password" placeholder="sk-ant-... (stored only on this PC)">
+  <input id="key" type="password" placeholder="API key (stored only on this PC)">
+  <details id="adv">
+    <summary>Using a reseller like Coarena?</summary>
+    <p>Paste its Anthropic-compatible API address and the model name it lists. Leave both empty for a normal Anthropic key.</p>
+    <p>For Coarena, the address is <code>https://coarena.ai/api</code></p>
+    <input id="baseUrl" placeholder="API address, e.g. https://coarena.ai/api">
+    <input id="model" placeholder="Model name (default: claude-opus-5-5)">
+  </details>
+  <p id="keyMsg" class="keymsg"></p>
   <div class="actions"><button class="btn primary" id="saveKey">Save</button><button class="btn" id="clearKey">Remove key</button><button class="btn" onclick="dlg.close()">Close</button></div>
 </dialog>
 
@@ -452,12 +478,68 @@ $("#musicClear").addEventListener("click", () => {
   $("#musicName").textContent = "Drop an mp3 / wav here, or click"; $("#musicClear").classList.add("hidden");
 });
 
+// ---------- caption fonts ----------
+let fonts = [];
+const loadedFaces = {};
+function savedFont() { try { return localStorage.getItem("forge.font"); } catch { return null; } }
+async function loadFonts(pick) {
+  const r = await fetch("/api/fonts").then(r => r.ok ? r.json() : {error: r.status}).catch(() => ({error: "offline"}));
+  if (r.error) $("#fontMsg").textContent = "Couldn't load fonts from Creator Studio. Close it and open it again (it may be running an older version).";
+  fonts = r.fonts || [];
+  const want = pick || savedFont();
+  const sys = fonts.filter(f => !f.custom), mine = fonts.filter(f => f.custom);
+  const opt = f => `<option value="${f.id.replace(/"/g, "&quot;")}">${f.name.replace(/</g, "&lt;")}</option>`;
+  $("#fontSel").innerHTML = `<optgroup label="Built-in">${sys.map(opt).join("")}</optgroup>` +
+    (mine.length ? `<optgroup label="My fonts">${mine.map(opt).join("")}</optgroup>` : "");
+  if (want && fonts.some(f => f.id === want)) $("#fontSel").value = want;
+  onFont();
+}
+async function onFont() {
+  const id = $("#fontSel").value, f = fonts.find(x => x.id === id);
+  $("#fontDel").classList.toggle("hidden", !f || !f.custom);
+  try { localStorage.setItem("forge.font", id); } catch {}
+  if (!f) return;
+  const fam = "cf_" + id.replace(/[^\w]/g, "_");
+  if (!loadedFaces[fam]) {
+    try {
+      const face = new FontFace(fam, `url(/api/fonts/file/${encodeURIComponent(id)})`);
+      document.fonts.add(await face.load()); loadedFaces[fam] = true;
+    } catch { $("#fontMsg").textContent = "Couldn't preview this font, but it will still be used."; }
+  }
+  $("#fontPreview").style.fontFamily = `"${fam}", sans-serif`;
+}
+$("#fontSel").addEventListener("change", () => { $("#fontMsg").textContent = ""; onFont(); });
+$("#fontAdd").addEventListener("click", () => $("#fontFile").click());
+$("#fontFile").addEventListener("change", async e => {
+  let last = null, errs = [];
+  for (const file of e.target.files) {
+    const fd = new FormData(); fd.append("file", file);
+    const r = await fetch("/api/fonts", {method: "POST", body: fd})
+      .then(r => r.headers.get("content-type")?.includes("json") ? r.json()
+        : {error: r.status === 404 ? "Creator Studio needs a restart to add fonts. Close it and open it again." : `Upload failed (${r.status}).`})
+      .catch(() => ({error: "Upload failed - is Creator Studio running?"}));
+    if (r.error) errs.push(`${file.name}: ${r.error}`); else last = r.font;
+  }
+  e.target.value = "";
+  await loadFonts(last && last.id);
+  $("#fontMsg").textContent = errs.join(" · ") || (last ? `Added ${last.name}.` : "");
+});
+$("#fontDel").addEventListener("click", async () => {
+  const f = fonts.find(x => x.id === $("#fontSel").value);
+  if (!f || !f.custom || !confirm(`Remove the font "${f.name}"?`)) return;
+  await fetch(`/api/fonts/${encodeURIComponent(f.id)}`, {method: "DELETE"});
+  $("#fontMsg").textContent = `Removed ${f.name}.`;
+  await loadFonts(fonts.find(x => !x.custom)?.id);
+});
+loadFonts();
+
 // run
 $("#go").addEventListener("click", async () => {
   if (!job) return;
   const o = {aspect: opts.aspect, pace: opts.pace, captions: opts.caption_position !== "off",
              caption_position: opts.caption_position === "off" ? "middle" : opts.caption_position,
-             vignette: $("#vignette").checked, music: opts.music !== false, layout: opts.layout};
+             vignette: $("#vignette").checked, music: opts.music !== false, layout: opts.layout,
+             caption_font: $("#fontSel").value || undefined};
   if (opts.layout === "split") Object.assign(o, { aspect: "9:16", split_ratio: split.ratio, face_box: split.face, game_box: split.game });
   const r = await fetch("/api/start", {method: "POST", headers: {"Content-Type": "application/json"},
                         body: JSON.stringify({job, instructions: $("#instr").value, options: o})}).then(r => r.json());
@@ -488,6 +570,7 @@ async function poll() {
 function showResult(s) {
   const url = `/api/file/${job}/${s.output}`;
   $("#out").src = url; $("#dl").href = url + "?dl=1";
+  if (s.saved_as) try { if (window.parent !== window) window.parent.shortSaved(); } catch (e) {}
   const r = s.result;
   $("#stats").innerHTML = [
     [fmt(r.duration), "final length"], [fmt(Math.max(0, srcDur - r.duration)), "removed"],
@@ -502,11 +585,39 @@ function showResult(s) {
     const esc = t => t.replace(/[<&>"]/g, c => ({"<": "&lt;", "&": "&amp;", ">": "&gt;", '"': "&quot;"}[c]));
     box.innerHTML = `<b>⚠ These instructions were not applied:</b><ul>` +
       ign.slice(9).split(" | ").map(p => `<li>${esc(p)}</li>`).join("") +
-      `</ul><p>Without an Anthropic API key, ClipForge only understands simple requests (length, format, layout, captions, music, vignette, pace). Click the <b>Claude off</b> button at the top to add a key and have these followed.</p>`;
+      `</ul>` + ((s.log || []).some(l => l.includes("Claude not used"))
+        ? `<p>Without an AI key, ClipForge only understands simple requests (length, format, layout, captions, music, vignette, pace). Click the <b>Claude off</b> button at the top to add a key and have these followed.</p>`
+        : `<p>ClipForge can't do these yet. It can cut, colour caption words, add hook text at the top, and change format, layout, captions, music and vignette.</p>`);
   }
   $("#resultCard").classList.remove("hidden");
   $("#resultCard").scrollIntoView({behavior: "smooth", block: "start"});
 }
+// Save the result the same way the Clip downloader does (fetch -> blob -> <a download>);
+// a plain link to the attachment silently does nothing inside the app window's iframe.
+$("#dl").addEventListener("click", async e => {
+  e.preventDefault();
+  const a = $("#dl"), href = a.getAttribute("href");
+  if (!href || href === "#" || a.dataset.busy) return;
+  a.dataset.busy = "1"; a.textContent = "Saving…";
+  try {
+    const r = await fetch(href);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const cd = r.headers.get("Content-Disposition") || "";
+    const star = cd.match(/filename\*=UTF-8''([^;]+)/i), plain = cd.match(/filename="?([^";]+)"?/i);
+    const name = star ? decodeURIComponent(star[1]) : plain ? plain[1] : "ClipForge.mp4";
+    const url = URL.createObjectURL(await r.blob());
+    const tmp = document.createElement("a");
+    tmp.href = url; tmp.download = name;
+    document.body.appendChild(tmp); tmp.click(); tmp.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    a.textContent = "✓ Saved to Downloads";
+    setTimeout(() => { a.textContent = "Download MP4"; }, 2500);
+  } catch (err) {
+    a.textContent = "Download failed, try again";
+    setTimeout(() => { a.textContent = "Download MP4"; }, 3000);
+  } finally { delete a.dataset.busy; }
+});
+
 $("#again").addEventListener("click", () => { $("#instr").focus(); window.scrollTo({top: 0, behavior: "smooth"}); });
 
 // Claude key
@@ -514,14 +625,26 @@ const dlg = $("#dlg");
 async function refreshKey() {
   const c = await fetch("/api/config").then(r => r.json());
   $("#keyPill").textContent = c.has_key ? "on" : "off"; $("#keyPill").className = "pill " + (c.has_key ? "ok" : "no");
+  $("#baseUrl").value = c.base_url || ""; $("#model").value = c.model || "";
+  $("#adv").open = !!(c.base_url || c.model);
+  $("#key").placeholder = c.has_key ? "Key saved. Paste a new one to replace it" : "API key (stored only on this PC)";
 }
-$("#settingsBtn").addEventListener("click", () => dlg.showModal());
+const keyMsg = (t, cls) => { $("#keyMsg").textContent = t; $("#keyMsg").className = "keymsg " + (cls || ""); };
+$("#settingsBtn").addEventListener("click", () => { keyMsg(""); dlg.showModal(); });
 $("#saveKey").addEventListener("click", async () => {
-  await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({anthropic_api_key: $("#key").value})});
-  $("#key").value = ""; dlg.close(); refreshKey();
+  const btn = $("#saveKey"); btn.disabled = true; keyMsg("Checking the key…");
+  try {
+    const r = await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({anthropic_api_key: $("#key").value, base_url: $("#baseUrl").value, model: $("#model").value})});
+    const d = await r.json();
+    if (!r.ok) return keyMsg(d.error || "Could not save the key.", "err");
+    $("#key").value = ""; keyMsg("Key works ✓ Saved.", "ok"); refreshKey();
+    setTimeout(() => dlg.close(), 900);
+  } catch { keyMsg("Couldn't reach ClipForge. Is it still running?", "err"); }
+  finally { btn.disabled = false; }
 });
 $("#clearKey").addEventListener("click", async () => {
-  await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({anthropic_api_key: ""})});
+  await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({clear: true})});
   dlg.close(); refreshKey();
 });
 refreshKey();

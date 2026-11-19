@@ -31,7 +31,16 @@ Decide:
 3. settings: apply anything the creator said about format (aspect ratio, layout, captions on/off and position,
    vignette, music). layout "split" = facecam/reaction on top and gameplay below (gaming clips); "full" = one
    face-following crop. Use "keep" for anything they did not mention.
-Write a one-sentence summary of the edit you made."""
+4. hook: an on-screen title shown at the top of the video. Fill it in when the creator asks for hook text, a title,
+   a headline or text on screen; otherwise leave text "". Keep it short and punchy (max ~8 words), in the creator's
+   words if they gave them. glow_words = the words of the hook that should glow (exact words from the hook text,
+   e.g. the ones the creator asked to glow or highlight), color = the glow colour. seconds = how long it stays on
+   screen from the start (0 = the whole video; use 0 unless the creator says otherwise).
+5. unsupported: anything the creator asked for that this editor can NOT do with the fields above (for example
+   zooms, sound effects, stickers, emojis, transitions, slow motion, filters, B-roll, memes), each as a short
+   phrase quoting their request. Empty list if everything was handled.
+Write a one-sentence summary of the edit you made. Only describe what the fields above actually do: never claim an
+effect that is listed in unsupported."""
 
 SCHEMA = {
     "type": "object",
@@ -56,9 +65,20 @@ SCHEMA = {
             },
             "required": ["aspect", "layout", "captions", "caption_position", "vignette", "music"],
             "additionalProperties": False},
+        "hook": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "glow_words": {"type": "array", "items": {"type": "string"}},
+                "color": {"type": "string", "enum": list(COLORS)},
+                "seconds": {"type": "number"},
+            },
+            "required": ["text", "glow_words", "color", "seconds"],
+            "additionalProperties": False},
+        "unsupported": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
     },
-    "required": ["keep", "highlights", "settings", "summary"],
+    "required": ["keep", "highlights", "settings", "hook", "unsupported", "summary"],
     "additionalProperties": False,
 }
 
@@ -164,44 +184,147 @@ def rules_plan(words, instructions, s: Settings):
 
 
 # ------------------------------------------------------------------ Claude
-def claude_plan(words, instructions, api_key, job):
+DEFAULT_MODEL = "claude-opus-5-5"
+
+
+def make_client(claude: dict | None):
+    """Anthropic client from the saved settings: key, plus an optional reseller address (e.g. Coarena)."""
     import anthropic
-    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    c = claude or {}
+    kw = {}
+    if c.get("api_key"): kw["api_key"] = c["api_key"]
+    if c.get("base_url"): kw["base_url"] = c["base_url"]
+    return anthropic.Anthropic(**kw)
+
+
+def check_key(claude: dict) -> str | None:
+    """Make one tiny request with these settings. Returns None if it works, else a readable error."""
+    import anthropic
+    try:
+        make_client(claude).messages.create(model=claude.get("model") or DEFAULT_MODEL, max_tokens=5,
+                                            messages=[{"role": "user", "content": "Say ok"}])
+        return None
+    except anthropic.AuthenticationError:
+        return "The key was rejected (invalid key)."
+    except anthropic.PermissionDeniedError as e:
+        return f"The key isn't allowed to do this: {_short(e)}"
+    except anthropic.NotFoundError as e:
+        return f"Model or address not found. Check the model name and API address. ({_short(e)})"
+    except anthropic.RateLimitError:
+        return None  # key works, just busy
+    except anthropic.APIConnectionError:
+        return "Couldn't reach the API address. Check it and your internet connection."
+    except anthropic.APIStatusError as e:
+        if e.status_code == 402 or "credit" in str(e).lower() or "balance" in str(e).lower():
+            return f"The key works but has no credit left. ({_short(e)})"
+        return f"Error {e.status_code}: {_short(e)}"
+
+
+def _short(e):
+    return (str(e).splitlines() or [""])[0][:200]
+
+
+def _parse_json(text):
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m: raise RuntimeError("Claude's reply had no JSON plan")
+    return json.loads(m.group(0))
+
+
+def claude_plan(words, instructions, claude, job):
+    client = make_client(claude)
+    model = (claude or {}).get("model") or DEFAULT_MODEL
     user = (f"Creator's instructions:\n{instructions.strip() or '(none - make a clean, tight edit)'}\n\n"
             f"Transcript ({len(words)} words, total {words[-1].end:.1f}s; format index:word):\n{_transcript_text(words)}")
-    job.log("Asking Claude to plan the edit...")
-    resp = client.beta.messages.create(
-        model="claude-opus-5-5",
-        max_tokens=16000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-        system=SYSTEM,
-        messages=[{"role": "user", "content": user}],
-    )
+    if (claude or {}).get("base_url"):
+        # Resellers often don't support Anthropic's newer options, so ask for JSON in plain words.
+        job.log(f"Asking Claude ({model}, via {claude['base_url']}) to plan the edit...")
+        resp = client.messages.create(
+            model=model,
+            max_tokens=16000,
+            system=SYSTEM + "\n\nReply with ONLY a JSON object (no prose, no code fences) matching this JSON schema:\n"
+                   + json.dumps(SCHEMA),
+            messages=[{"role": "user", "content": user}],
+        )
+    else:
+        job.log("Asking Claude to plan the edit...")
+        resp = client.beta.messages.create(
+            model=model,
+            max_tokens=16000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
+            system=SYSTEM,
+            messages=[{"role": "user", "content": user}],
+        )
     if resp.stop_reason == "refusal":
         raise RuntimeError("Claude declined to plan this edit")
     if resp.stop_reason == "max_tokens":
         raise RuntimeError("Claude's plan was cut off")
-    data = json.loads(next(b.text for b in resp.content if b.type == "text"))
+    data = _parse_json(next(b.text for b in resp.content if b.type == "text"))
+    for k, v in {"aspect": "keep", "layout": "keep", "captions": "keep", "caption_position": "keep",
+                 "vignette": "keep", "music": "keep"}.items():
+        data.setdefault("settings", {}).setdefault(k, v)
+    data.setdefault("highlights", []); data.setdefault("summary", ""); data.setdefault("unsupported", [])
     n = len(words)
     keep = [(max(0, r["from"]), min(n - 1, r["to"])) for r in data["keep"] if r["from"] <= r["to"]]
     hl = {h["index"]: h["color"] for h in data["highlights"] if 0 <= h["index"] < n}
-    return Plan(keep=keep, highlights=hl, summary=data["summary"]), data["settings"]
+    h = data.get("hook") or {}
+    hook = None
+    if str(h.get("text") or "").strip():
+        hook = {"text": str(h["text"]).strip(), "glow_words": [str(w) for w in h.get("glow_words") or []],
+                "color": h.get("color") if h.get("color") in COLORS else "yellow",
+                "seconds": max(0.0, float(h.get("seconds") or 0))}
+    unsupported = [str(u).strip() for u in data["unsupported"] if str(u).strip()]
+    return Plan(keep=keep, highlights=hl, summary=data["summary"], hook=hook, unsupported=unsupported), data["settings"]
 
 
-def make_plan(words, instructions, s: Settings, job, api_key=None):
+# The AI may only change a setting when the instructions talk about it; otherwise what the creator picked
+# in the app wins (models sometimes "helpfully" move captions or change the layout unasked).
+SETTING_TOPICS = {
+    "aspect": r"\d\s*[:x/]\s*\d|vertical|horizontal|portrait|landscape|square|aspect|ratio|format|tiktok|reels?\b|shorts?\b",
+    "layout": r"split|face ?cam|webcam|\bcam\b|layout|full ?(frame|screen)|gameplay|reaction",
+    "captions": r"caption|subtitle|\bsubs?\b",
+    "caption_position": r"caption|subtitle|\bsubs?\b",
+    "vignette": r"vignette",
+    "music": r"music|song|\bbeat\b|soundtrack",
+}
+
+
+def _apply_settings(st, s: Settings, instructions: str = "") -> Settings:
+    t = (instructions or "").lower()
+    def asked(k): return st.get(k, "keep") != "keep" and re.search(SETTING_TOPICS[k], t)
+    if asked("aspect"): s = replace(s, aspect=st["aspect"])
+    if asked("layout"): s = replace(s, layout=st["layout"])
+    if asked("captions"): s = replace(s, captions=st["captions"] == "on")
+    if asked("caption_position"): s = replace(s, caption_position=st["caption_position"])
+    if asked("vignette"): s = replace(s, vignette=st["vignette"] == "on")
+    if asked("music"): s = replace(s, music=st["music"] == "on")
+    return _apply_text_settings(instructions, s)   # the creator's own clear wording beats the AI's reading
+
+
+def make_plan(words, instructions, s: Settings, job, claude=None, video=None):
     s = _apply_text_settings(instructions or "", s)
+    # 1) Gemini watches the clip itself, so silent action isn't mistaken for dead air
+    if video:
+        try:
+            import watcher
+            if watcher.available():
+                plan, st = watcher.watch_plan(video["src"], video["workdir"], words, instructions or "",
+                                              video["dur"], job)
+                if plan.unsupported: job.log("Ignored: " + " | ".join(plan.unsupported))
+                return plan, _apply_settings(st, s, instructions)
+        except Exception as e:
+            job.log(f"Gemini couldn't watch the clip ({_short(e)}); planning from the transcript instead.")
+    if not words:
+        raise RuntimeError("No speech found in the video, and Gemini couldn't watch it.")
+    # 2) Claude (or a reseller model) reads the transcript
     try:
         import anthropic  # noqa: F401
-        plan, st = claude_plan(words, instructions or "", api_key, job)
-        if st["aspect"] != "keep": s = replace(s, aspect=st["aspect"])
-        if st.get("layout", "keep") != "keep": s = replace(s, layout=st["layout"])
-        if st["captions"] != "keep": s = replace(s, captions=st["captions"] == "on")
-        if st["caption_position"] != "keep": s = replace(s, caption_position=st["caption_position"])
-        if st["vignette"] != "keep": s = replace(s, vignette=st["vignette"] == "on")
-        if st["music"] != "keep": s = replace(s, music=st["music"] == "on")
+        plan, st = claude_plan(words, instructions or "", claude, job)
+        s = _apply_settings(st, s, instructions)
         if not plan.keep: raise RuntimeError("Claude returned an empty cut list")
+        if plan.unsupported:
+            job.log("Ignored: " + " | ".join(plan.unsupported))
         return plan, s
     except Exception as e:  # no key, network down, refusal... -> rules
         msg = str(e).splitlines()[0][:160] if str(e) else type(e).__name__

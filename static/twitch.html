@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twitch clips</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #ffffff; --text: #18181b; --muted: #6b6b73;
+    --line: #e4e4e0; --accent: #8a4cf5; --accent-ink: #fff; --field: #fafaf8;
+    --err-bg: #fdecec; --err: #b42318; --ok: #157a3c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111113; --card: #1a1a1d; --text: #ededee; --muted: #9a9aa3;
+      --line: #2b2b30; --accent: #9d6bff; --field: #141416;
+      --err-bg: #3a1716; --err: #ff9b93; --ok: #5fd68c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 Inter, system-ui, sans-serif;
+         min-height: 100vh; display: flex; justify-content: center; padding: 48px 16px; }
+  main { width: 100%; max-width: 640px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
+  h1 .dot { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .row { display: flex; gap: 10px; }
+  input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--field);
+          border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; outline: none; }
+  input:focus { border-color: var(--accent); }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 9px; cursor: pointer;
+           padding: 10px 16px; background: var(--accent); color: var(--accent-ink); flex: none;
+           display: inline-flex; align-items: center; gap: 8px; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  #msg { margin-top: 14px; font-size: 14px; border-radius: 9px; padding: 10px 12px; display: none;
+         background: var(--err-bg); color: var(--err); }
+  .spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
+          border-radius: 50%; animation: s .7s linear infinite; display: none; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .clip { display: flex; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+  .clip:first-of-type { border-top: 0; padding-top: 0; }
+  .clip img { width: 128px; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; background: #000; flex: none; }
+  .clip .info { flex: 1; min-width: 0; }
+  .clip b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .clip span { color: var(--muted); font-size: 13px; }
+  .acts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .acts button { padding: 7px 12px; font-size: 13px; }
+  .acts .forge { background: #ffd60a; color: #1a1500; }
+  .acts a { font-size: 13px; color: var(--muted); align-self: center; }
+  .acts a:hover { color: var(--text); }
+  #recent { display: none; }
+  @media (max-width: 520px) { .row { flex-direction: column; } .clip { align-items: flex-start; } .clip img { width: 96px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot"></span>Twitch clips</h1>
+  <p class="sub">Paste a Twitch clip link. It downloads the whole clip in the best quality, ready to edit in ClipForge.</p>
+
+  <div class="card">
+    <label for="url">Twitch clip link</label>
+    <div class="row">
+      <input id="url" placeholder="https://www.twitch.tv/channel/clip/…" autocomplete="off" spellcheck="false">
+      <button id="go" type="button"><span class="spin" id="spin"></span><span id="goText">Download</span></button>
+    </div>
+    <div class="hint">Pasting a link starts the download right away.</div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card" id="recent">
+    <h2>Downloaded</h2>
+    <div id="list"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const isClip = u => /twitch\.tv\/[\w]+\/clip\/[\w-]+|clips\.twitch\.tv\/[\w-]+/i.test(u);
+const fmtTime = s => s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : "";
+let busy = false;
+
+function msg(text) { $("msg").textContent = text; $("msg").style.display = text ? "block" : "none"; }
+
+function openInForge(file) {
+  if (window.parent !== window && window.parent.openInForge) window.parent.openInForge(file);
+  else location.href = "/?forge=" + encodeURIComponent(file);
+}
+
+function addClip(d) {
+  $("recent").style.display = "block";
+  const el = document.createElement("div");
+  el.className = "clip";
+  el.innerHTML = `${d.thumbnail ? `<img src="${esc(d.thumbnail)}" alt="">` : ""}
+    <div class="info"><b>${esc(d.title)}</b>
+      <span>${esc([d.channel, fmtTime(d.duration), d.height ? d.height + "p" : "", (d.size / 1048576).toFixed(1) + " MB"].filter(Boolean).join(" · "))}</span>
+      <div class="acts"><button class="forge" type="button">✂ Edit in ClipForge →</button>
+        <a href="/api/library/file/${encodeURIComponent(d.file)}?dl=1">Save to PC</a></div></div>`;
+  el.querySelector(".forge").onclick = () => openInForge(d.file);
+  $("list").prepend(el);
+}
+
+async function download() {
+  const url = $("url").value.trim();
+  if (busy) return;
+  if (!url) return msg("Paste a Twitch clip link first.");
+  if (!isClip(url)) return msg("That doesn't look like a Twitch clip link. It should look like twitch.tv/<channel>/clip/<name>.");
+  busy = true; msg("");
+  $("go").disabled = true; $("spin").style.display = "block"; $("goText").textContent = "Downloading…";
+  try {
+    const r = await fetch("/api/twitch/download", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                    body: JSON.stringify({ url }) });
+    const d = await r.json().catch(() => ({ error: "Something went wrong." }));
+    if (!r.ok) throw new Error(d.error);
+    addClip(d);
+    $("url").value = "";
+    try { window.parent.clipSaved(); } catch (e) {}
+  } catch (e) {
+    msg(e.message);
+  } finally {
+    busy = false;
+    $("go").disabled = false; $("spin").style.display = "none"; $("goText").textContent = "Download";
+  }
+}
+
+$("go").onclick = download;
+$("url").addEventListener("keydown", e => { if (e.key === "Enter") download(); });
+$("url").addEventListener("paste", () => setTimeout(() => { if (isClip($("url").value)) download(); }, 0));
+</script>
+</body>
+</html>

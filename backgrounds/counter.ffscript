@@ -1,0 +1,4 @@
+drawtext=fontfile='C\:/Windows/Fonts/arialbd.ttf':fontsize=190:fontcolor=0x8c8780:x=(w-text_w)/2:y=(h-text_h)/2:text='$ %{eif\:floor(t*1000000/3600)\:d}':enable='lt(t*1000000/3600,1000)',
+drawtext=fontfile='C\:/Windows/Fonts/arialbd.ttf':fontsize=190:fontcolor=0x8c8780:x=(w-text_w)/2:y=(h-text_h)/2:text='$ %{eif\:floor(t*1000/3600)\:d},%{eif\:mod(floor(t*1000000/3600),1000)\:d\:3}':enable='between(t*1000000/3600,1000,999999.9)',
+drawtext=fontfile='C\:/Windows/Fonts/arialbd.ttf':fontsize=190:fontcolor=0x8c8780:x=(w-text_w)/2:y=(h-text_h)/2:text='$ 1,000,000':enable='gte(t*1000000/3600,999999.9)',
+vignette=PI/4

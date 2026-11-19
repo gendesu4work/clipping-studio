@@ -3,6 +3,8 @@
 cookies.txt
 config.json
 settings.json
+license.key
+signing_key.pem
 
 # runtime data
 jobs/
@@ -11,3 +13,13 @@ studio.log
 *.lnk
 __pycache__/
 *.pyc
+
+# fonts the creator added in ClipForge
+fonts/
+
+# auto-updater state
+.update_version
+
+# rendered videos (personal, large)
+outputs/
+backgrounds/*.mp4

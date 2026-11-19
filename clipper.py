@@ -1,10 +1,14 @@
-"""YouTube Clipper (Creator Studio tab) - paste a link, pick start/end, download the clip.
+"""Clip downloader (Creator Studio tab) - paste a YouTube or Twitch link, pick start/end, download the clip.
 
 Run:  python app.py   then open http://127.0.0.1:5000
 Needs: flask, yt-dlp, and ffmpeg on PATH.
 """
+import copy
 import io
 import json
+import struct
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 import os
 import time
 import re
@@ -200,7 +204,26 @@ def model_order(client) -> list[str]:
         order += _model_cache[(load_key(), "flash-all")][:3]  # newest Flash + two older backups
     except RuntimeError:
         pass
+    order += lite_models(client)[:1]  # Flash-Lite: lower quality but usually free when the others are overloaded
     return order or [best_model(client, "pro")]
+
+
+def lite_models(client) -> list[str]:
+    """Newest Flash-Lite models, used only as a last resort."""
+    cache_key = (load_key(), "flash-lite")
+    if cache_key not in _model_cache:
+        names = []
+        try:
+            for m in client.models.list():
+                name = m.name.removeprefix("models/")
+                if name.startswith("gemini") and "flash-lite" in name and not any(
+                        s in name for s in ("tts", "image", "audio", "live")):
+                    ver = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+                    names.append((float(ver.group(1)) if ver else 0, "preview" not in name, -len(name), name))
+        except Exception:
+            pass
+        _model_cache[cache_key] = [n[-1] for n in sorted(names, reverse=True)]
+    return _model_cache[cache_key]
 
 
 def gemini_error(e: Exception, model: str = "") -> str:
@@ -274,6 +297,34 @@ MODES = {
 }
 
 
+def platform(url: str) -> str:
+    u = url.lower()
+    if "youtube.com" in u or "youtu.be" in u:
+        return "youtube"
+    if "twitch.tv" in u:
+        return "twitch"
+    return "other"
+
+
+def twitch_id(url: str) -> str | None:
+    """Clip slug or VOD number from any Twitch clip/VOD link."""
+    m = (re.search(r"clips\.twitch\.tv/(?:embed\?clip=)?([\w-]+)", url)
+         or re.search(r"twitch\.tv/[\w]+/clip/([\w-]+)", url)
+         or re.search(r"twitch\.tv/videos/(\d+)", url))
+    return m.group(1) if m else None
+
+
+def preview_source(data: dict):
+    """A URL the page's own video player can play (Twitch has no embeddable player on localhost)."""
+    fmts = [f for f in data.get("formats") or [] if f.get("vcodec") != "none" and f.get("url")]
+    mp4 = [f for f in fmts if f.get("ext") == "mp4" and (f.get("protocol") or "").startswith("http")]
+    hls = [f for f in fmts if "m3u8" in (f.get("protocol") or "")]
+    def pick(fs): return min(fs, key=lambda f: abs((f.get("height") or 720) - 720))
+    if mp4: return pick(mp4)["url"], "mp4"
+    if hls: return pick(hls)["url"], "hls"
+    return (data.get("url"), "mp4") if data.get("url") else (None, None)
+
+
 def youtube_watch_url(url: str) -> str:
     m = re.search(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([\w-]{11})", url)
     return f"https://www.youtube.com/watch?v={m.group(1)}" if m else url
@@ -316,7 +367,7 @@ def moments():
     count = max(1, min(int(body.get("count") or 5), 15))
     duration = body.get("duration") or 0
     if not url:
-        return jsonify(error="Paste a YouTube link first."), 400
+        return jsonify(error="Paste a YouTube or Twitch link first."), 400
     try:
         client = gemini_client()
         models = model_order(client)
@@ -349,8 +400,10 @@ def moments():
                           video_metadata=types.VideoMetadata(fps=fps))
         last = None
         def call(model):
-            # Google returns 503/500 when a model is overloaded; retry once, then try the next model.
-            for attempt in range(2):
+            # Google answers 503/500 fast when a model is overloaded: back off and retry the same model.
+            # Timeouts already cost minutes, so those go straight to the next model instead.
+            waits = (5, 15)
+            for attempt in range(len(waits) + 1):
                 try:
                     return client.models.generate_content(
                         model=model,
@@ -358,30 +411,40 @@ def moments():
                         config=config,
                     )
                 except Exception as e:
-                    busy = any(s in str(e) for s in ("503", "UNAVAILABLE", "500 INTERNAL", "overloaded"))
-                    if not busy or attempt == 1:
+                    busy = any(s in str(e) for s in ("503", "UNAVAILABLE", "500 INTERNAL", "overloaded", "high demand"))
+                    if not busy or attempt == len(waits):
                         raise
-                    time.sleep(5)
+                    time.sleep(waits[attempt])
 
-        for i, model in enumerate(models):
-            try:
-                resp = call(model)
-                used["model"] = model
-                return resp.parsed if resp.parsed else MomentList.model_validate_json(resp.text)
-            except Exception as e:
-                last = gemini_error(e, model)
-                quota = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-                busy = "overloaded" in last
-                if quota and "-pro" in model and "limit: 0" in str(e):
-                    save_settings(pro_blocked_key=load_key()[-6:])  # free-tier key: Pro never available
-                if not (quota or busy) or i == len(models) - 1:
-                    raise RuntimeError(last) from e
-                reason = "has no free quota left" if quota else "was overloaded"
-                used["note"] = f"{model} {reason}, so a backup model was used."
+        # Try every model; if some were only overloaded (not out of quota), wait and give those one more round.
+        todo = list(models)
+        for round_no in range(2):
+            busy_models = []
+            for model in todo:
+                try:
+                    resp = call(model)
+                    used["model"] = model
+                    if model != models[0] and not used["note"]:
+                        used["note"] = f"{models[0]} was busy, so a backup model was used."
+                    return resp.parsed if resp.parsed else MomentList.model_validate_json(resp.text)
+                except Exception as e:
+                    last = gemini_error(e, model)
+                    quota = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+                    if quota and "-pro" in model and "limit: 0" in str(e):
+                        save_settings(pro_blocked_key=load_key()[-6:])  # free-tier key: Pro never available
+                    if not (quota or "overloaded" in last):
+                        raise RuntimeError(last) from e
+                    if not quota:
+                        busy_models.append(model)
+                    print(f"Gemini {model}: {'no quota left' if quota else 'overloaded'}, trying next")
+            if not busy_models or round_no == 1:
+                break
+            todo = busy_models
+            time.sleep(30)
         raise RuntimeError(last or "No model available.")
 
     result, method = None, "youtube"
-    if not body.get("restricted"):
+    if not body.get("restricted") and platform(url) == "youtube":
         try:
             result = ask(youtube_watch_url(url), "video/youtube")
         except Exception as e:
@@ -389,8 +452,8 @@ def moments():
             if "usage limit" in str(e) or "overloaded" in str(e):  # Gemini problem, not a video problem
                 return jsonify(error=str(e)), 503
     if result is None:
-        # Gemini can't open age-restricted/private videos by link, so download a small
-        # copy with the user's YouTube sign-in and upload it to Gemini instead.
+        # Gemini can only open public YouTube links, so for Twitch and restricted videos
+        # download a small copy (with the user's sign-in if needed) and upload it instead.
         method = "upload"
         try:
             result = analyze_by_upload(client, url, ask)
@@ -443,24 +506,62 @@ def index():
 def info():
     url = (request.json or {}).get("url", "").strip()
     if not url:
-        return jsonify(error="Please paste a YouTube link."), 400
+        return jsonify(error="Please paste a YouTube or Twitch link."), 400
     try:
-        with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
-            data = ydl.extract_info(url, download=False)
+        data = video_info(url, fresh=True)
     except Exception as e:
         return jsonify(error=f"Couldn't read that video: {friendly_error(e)}"), 400
     _meta_cache[video_id(url)] = {
         "title": data.get("title") or "clip",
         "restricted": (data.get("age_limit") or 0) >= 18 or data.get("availability") not in (None, "public"),
     }
+    plat = platform(url)
+    preview, preview_type = preview_source(data) if plat != "youtube" else (None, None)
     return jsonify(
         title=data.get("title"),
         duration=data.get("duration"),
         thumbnail=data.get("thumbnail"),
-        channel=data.get("uploader"),
+        channel=(data.get("channel") or data.get("creator") or data.get("uploader")) if plat == "twitch" else data.get("uploader"),
         id=data.get("id"),
+        platform=plat,
+        kind="clip" if plat == "twitch" and "/videos/" not in url else "video",
+        preview=preview, preview_type=preview_type,
         restricted=(data.get("age_limit") or 0) >= 18 or data.get("availability") not in (None, "public"),
     )
+
+
+@app.post("/api/twitch/download")
+def twitch_download():
+    """Twitch clips tab: paste a clip link, get the whole clip in the library, ready for ClipForge."""
+    url = ((request.json or {}).get("url") or "").strip()
+    if platform(url) != "twitch" or not twitch_id(url):
+        return jsonify(error="That isn't a Twitch clip link. It should look like twitch.tv/<channel>/clip/<name>."), 400
+    if "/videos/" in url:
+        return jsonify(error="That's a past broadcast, not a clip. Use the Clip downloader tab to cut a part of it."), 400
+    url = url.split("?")[0]   # drop tracking bits like ?range=7d
+    workdir = Path(tempfile.mkdtemp(prefix="twclip_"))
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts(format=QUALITY_FORMATS["best"], merge_output_format="mp4",
+                                       outtmpl=str(workdir / "clip.%(ext)s"))) as ydl:
+            data = ydl.extract_info(url, download=True)
+        files = [p for p in workdir.iterdir() if p.is_file() and p.stat().st_size > 0 and ".part" not in p.name]
+        if not files:
+            raise RuntimeError("The download produced no file.")
+        out = max(files, key=lambda p: p.stat().st_size)
+        title = data.get("title") or twitch_id(url)
+        channel = data.get("channel") or data.get("creator") or data.get("uploader") or ""   # the streamer, not who clipped it
+        from forge_routes import save_to_library
+        lib = save_to_library(out, f"{safe_name(title)}{' - ' + safe_name(channel) if channel else ''}{out.suffix}")
+        return jsonify(ok=True, file=lib, title=title, channel=channel, duration=data.get("duration"),
+                       thumbnail=data.get("thumbnail"), size=out.stat().st_size, height=data.get("height"))
+    except Exception as e:
+        print("Twitch download failed:", e)
+        msg = friendly_error(e)
+        if "404" in msg or "does not exist" in msg.lower() or "unable to download" in msg.lower():
+            msg = "Couldn't find that clip. It may have been deleted, or the link is incomplete."
+        return jsonify(error=msg), 502
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 @app.post("/api/clip")
@@ -469,7 +570,7 @@ def clip():
     url = body.get("url", "").strip()
     quality = body.get("quality", "720")
     if not url:
-        return jsonify(error="Please paste a YouTube link."), 400
+        return jsonify(error="Please paste a YouTube or Twitch link."), 400
     try:
         start = parse_time(body.get("start"))
         end = parse_time(body.get("end"))
@@ -485,9 +586,18 @@ def clip():
     try:
         meta = video_meta(url)
         out = None
-        # Fast path: let yt-dlp/ffmpeg fetch only the requested part. YouTube sometimes
-        # stalls this (often on restricted videos), so it runs with a time limit.
-        if not meta["restricted"]:
+        # Fastest path: download only the bytes that cover the clip, then cut it locally.
+        t0 = time.time()
+        try:
+            out = fast_clip(url, quality, start, end, workdir)
+        except Exception as e:
+            print("Fast clip failed, trying the slower ways:", str(e)[-300:])
+            out = None
+        if out is not None:
+            print(f"Fast clip done in {time.time() - t0:.1f}s")
+        # Next: let yt-dlp/ffmpeg fetch the part. YouTube sometimes stalls this
+        # (often on restricted videos), so it runs with a time limit.
+        if out is None and not meta["restricted"]:
             out = range_download(url, quality, start, end, workdir)
         if out is None:
             # Reliable path: download the whole video once (cached), then cut locally.
@@ -524,15 +634,178 @@ _locks_guard = threading.Lock()
 
 
 def video_id(url: str) -> str:
+    if platform(url) == "twitch" and twitch_id(url):
+        return "tw_" + twitch_id(url)
     m = re.search(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([\w-]{11})", url)
     return m.group(1) if m else re.sub(r"\W", "_", url)[-40:]
+
+
+_info_cache: dict = {}  # video id -> (when, yt-dlp info); stream links stay valid for a few hours
+INFO_TTL = 3600
+
+
+def video_info(url: str, fresh: bool = False) -> dict:
+    """yt-dlp's info for a video, reused for an hour so each clip skips the 3-10s lookup."""
+    vid = video_id(url)
+    hit = _info_cache.get(vid)
+    if hit and not fresh and time.time() - hit[0] < INFO_TTL:
+        return hit[1]
+    with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
+        data = ydl.extract_info(url, download=False)
+    _info_cache[vid] = (time.time(), data)
+    return data
+
+
+# ---------------------------------------------------- fast partial clips ----
+FAST_FORMATS = {**QUALITY_FORMATS, "audio": "ba[ext=m4a]/ba/b"}  # m4a audio can be fetched in parts
+_encoder: list | None = None
+
+
+def video_encoder() -> list[str]:
+    """NVIDIA GPU encoding when it works on this PC (several times faster), else fast CPU x264."""
+    global _encoder
+    if _encoder is None:
+        _encoder = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        try:
+            r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                                "color=s=1280x720", "-frames:v", "5", "-c:v", "h264_nvenc", "-f", "null", "-"],
+                               capture_output=True, timeout=20)
+            if r.returncode == 0:
+                _encoder = ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "22", "-b:v", "0"]
+        except Exception:
+            pass
+    return _encoder
+
+
+def _fetch(f: dict, a: int, b: int) -> bytes:
+    """Bytes a..b of a stream. YouTube slows down long requests, so fetch in 2 MB pieces."""
+    headers = dict(f.get("http_headers") or {})
+    out = bytearray()
+    while a + len(out) <= b:
+        lo = a + len(out)
+        headers["Range"] = f"bytes={lo}-{min(b, lo + (2 << 20) - 1)}"
+        with urllib.request.urlopen(urllib.request.Request(f["url"], headers=headers), timeout=30) as r:
+            piece = r.read()
+        if not piece:
+            raise RuntimeError("stream ended early")
+        out += piece
+    return bytes(out)
+
+
+def _boxes(data: bytes):
+    pos = 0
+    while pos + 8 <= len(data):
+        size, typ = struct.unpack(">I4s", data[pos:pos + 8])
+        hdr = 8
+        if size == 1:
+            size, hdr = struct.unpack(">Q", data[pos + 8:pos + 16])[0], 16
+        yield typ, pos, size, hdr
+        if size < 8:
+            return
+        pos += size
+
+
+def dash_part(f: dict, t0: float, t1: float, path: Path) -> bool:
+    """Save just the pieces of a fragmented MP4 stream (YouTube DASH) that cover t0..t1.
+    The file keeps the original timestamps, so it is cut later by absolute time."""
+    head = _fetch(f, 0, 65535)
+    sidx = next(((pos, size, hdr) for typ, pos, size, hdr in _boxes(head) if typ == b"sidx"), None)
+    if not sidx or sidx[0] + sidx[1] > len(head):
+        return False  # not a fragmented stream with an index
+    pos, size, hdr = sidx
+    b = head[pos + hdr:pos + size]
+    timescale = struct.unpack(">I", b[8:12])[0]
+    if b[0] == 0:
+        ept, first = struct.unpack(">II", b[12:20]); p = 20
+    else:
+        ept, first = struct.unpack(">QQ", b[12:28]); p = 28
+    count = struct.unpack(">H", b[p + 2:p + 4])[0]; p += 4
+    offset, t, use = pos + size + first, ept / timescale, []
+    for _ in range(count):
+        ref, dur, _sap = struct.unpack(">III", b[p:p + 12]); p += 12
+        seg_end = t + dur / timescale
+        if seg_end > t0 and t < t1:
+            use.append((offset, offset + (ref & 0x7FFFFFFF) - 1))
+        t, offset = seg_end, offset + (ref & 0x7FFFFFFF)
+    if not use:
+        return False
+    path.write_bytes(head[:pos] + _fetch(f, use[0][0], use[-1][1]))  # header + covering fragments
+    return True
+
+
+def fast_clip(url, quality, start, end, workdir: Path):
+    """Download only the part of the video that covers the clip. Returns None if the stream type isn't supported."""
+    formats = video_info(url).get("formats") or []
+    with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
+        selector = ydl.build_format_selector(FAST_FORMATS[quality])
+    chosen = next(iter(selector({
+        "formats": copy.deepcopy(formats),
+        "has_merged_format": any("none" not in (f.get("acodec"), f.get("vcodec")) for f in formats),
+        "incomplete_formats": all(f.get("vcodec") == "none" for f in formats)
+                              or all(f.get("acodec") == "none" for f in formats),
+    })), None)
+    if not chosen:
+        return None
+    fmts = chosen.get("requested_formats") or [chosen]
+    audio_only = quality == "audio"
+    out = workdir / ("clip.mp3" if audio_only else "clip.mp4")
+    acodec = ["-ac", "2", *(["-c:a", "libmp3lame", "-b:a", "192k"] if audio_only else ["-c:a", "aac", "-b:a", "160k"])]
+
+    def encode(cmd_in: list, maps: list, timeout: float):
+        x264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        encoders = [[]] if audio_only else [video_encoder()] + ([x264] if video_encoder() != x264 else [])
+        for enc in encoders:  # if the GPU encoder fails on this clip, redo it on the CPU
+            vcodec = [] if audio_only else [*enc, "-pix_fmt", "yuv420p"]
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *cmd_in, *maps, *vcodec, *acodec,
+                   *([] if audio_only else ["-movflags", "+faststart"]), str(out)]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0 and out.exists() and out.stat().st_size > 1000:
+                return out
+            print("Fast clip encode failed:", r.stderr[-300:])
+        return None
+
+    # YouTube: fragmented MP4 video/audio streams with an index -> fetch only the needed bytes
+    if all((f.get("protocol") or "").startswith("http") and f.get("ext") in ("mp4", "m4a") for f in fmts):
+        parts = [workdir / f"part{i}.mp4" for i in range(len(fmts))]
+        with ThreadPoolExecutor(len(fmts)) as ex:
+            ok = list(ex.map(lambda i: dash_part(fmts[i], start, end, parts[i]), range(len(fmts))))
+        if not all(ok):
+            return None
+        vi = next((i for i, f in enumerate(fmts) if f.get("vcodec") not in (None, "none")), None)
+        ai = next((i for i, f in enumerate(fmts) if f.get("acodec") not in (None, "none")), None)
+        if audio_only:
+            vi = None
+        if ai is None and vi is None:
+            return None
+        cmd_in, graph, maps = [], [], []
+        for p in parts:
+            cmd_in += ["-copyts", "-i", str(p)]
+        if vi is not None:
+            graph.append(f"[{vi}:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,format=yuv420p[v]")
+            maps += ["-map", "[v]"]
+        if ai is not None:
+            graph.append(f"[{ai}:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a]")
+            maps += ["-map", "[a]"]
+        return encode(cmd_in, ["-filter_complex", ";".join(graph), *maps], timeout=120 + (end - start))
+
+    # Twitch VODs: HLS playlists -> ffmpeg jumps straight to the right segments
+    if len(fmts) == 1 and "m3u8" in (fmts[0].get("protocol") or ""):
+        f = fmts[0]
+        hdrs = "".join(f"{k}: {v}\r\n" for k, v in (f.get("http_headers") or {}).items())
+        cmd_in = ["-headers", hdrs, "-ss", f"{start}", "-i", f["url"], "-t", f"{end - start}"]
+        maps = ["-map", "0:a:0?"] if audio_only else ["-map", "0:v:0?", "-map", "0:a:0?"]
+        try:
+            return encode(cmd_in, maps, timeout=min(300, 60 + 3 * (end - start)))
+        except subprocess.TimeoutExpired:
+            print("Fast HLS clip stalled; using the slower ways.")
+            return None
+    return None
 
 
 def video_meta(url: str) -> dict:
     vid = video_id(url)
     if vid not in _meta_cache:
-        with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
-            data = ydl.extract_info(url, download=False)
+        data = video_info(url)
         _meta_cache[vid] = {
             "title": data.get("title") or "clip",
             "restricted": (data.get("age_limit") or 0) >= 18 or data.get("availability") not in (None, "public"),
@@ -627,7 +900,7 @@ def cut_local(src: Path, start, end, audio_only, workdir: Path) -> Path:
         codec = ["-vn", "-c:a", "libmp3lame", "-b:a", "192k"]
     else:
         out = workdir / "clip.mp4"
-        codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        codec = [*video_encoder(), "-pix_fmt", "yuv420p",
                  "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start}", "-i", str(src),
            "-t", f"{end - start}", *codec, str(out)]
