@@ -23,3 +23,6 @@ fonts/
 # rendered videos (personal, large)
 outputs/
 backgrounds/*.mp4
+
+.venv/
+.claude/

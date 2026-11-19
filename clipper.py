@@ -194,11 +194,32 @@ def pro_blocked() -> bool:
     return settings().get("pro_blocked_key") == load_key()[-6:]
 
 
+def retired_models() -> set[str]:
+    """Models Google listed but then refused with 404 (e.g. 'no longer available to new users')."""
+    return set(settings().get("retired_models") or [])
+
+
+def is_retired_error(e: Exception, model: str) -> bool:
+    """A 404 about the model itself (not about the video)."""
+    msg = str(e)
+    return ("404" in msg or "NOT_FOUND" in msg) and (f"models/{model}" in msg or "no longer available" in msg)
+
+
+def retire_model(model: str):
+    save_settings(retired_models=sorted(retired_models() | {model}))
+    _model_cache.clear()  # re-pick the newest model without the retired one
+
+
 def model_order(client) -> list[str]:
     """Models to try, best first: Pro, then Flash as a fallback when Pro has no quota."""
     if os.environ.get("GEMINI_MODEL"):
         return [os.environ["GEMINI_MODEL"]]
-    order = [] if pro_blocked() else [best_model(client, "pro")]
+    order = []
+    if not pro_blocked():
+        try:
+            order.append(best_model(client, "pro"))
+        except RuntimeError:
+            pass  # no usable Pro model for this key: Flash only
     try:
         best_model(client, "flash")
         order += _model_cache[(load_key(), "flash-all")][:3]  # newest Flash + two older backups
@@ -249,9 +270,12 @@ def best_model(client, family: str = "pro") -> str:
         return _model_cache[cache_key]
     skip = ("tts", "image", "embedding", "audio", "computer", "customtools", "live", "learnlm", "vision", "lite", "thinking")
     candidates = []
+    retired = retired_models()
     for m in client.models.list():
         name = m.name.removeprefix("models/")
         actions = getattr(m, "supported_actions", None) or []
+        if name in retired:
+            continue
         if f"-{family}" not in name or not name.startswith("gemini") or any(s in name for s in skip):
             continue
         if actions and "generateContent" not in actions:
@@ -349,7 +373,11 @@ def gemini_key():
     if not key:
         return jsonify(error="Paste your API key."), 400
     try:
-        model = best_model(genai.Client(api_key=key))
+        client = genai.Client(api_key=key)
+        try:
+            model = best_model(client, "pro")
+        except RuntimeError:
+            model = best_model(client, "flash")
     except Exception as e:
         return jsonify(error=f"That key didn't work: {e}"), 400
     ENV_FILE.write_text(f"GEMINI_API_KEY={key}\n", encoding="utf-8")
@@ -430,13 +458,18 @@ def moments():
                 except Exception as e:
                     last = gemini_error(e, model)
                     quota = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+                    busy = "overloaded" in last
+                    retired = is_retired_error(e, model)
                     if quota and "-pro" in model and "limit: 0" in str(e):
                         save_settings(pro_blocked_key=load_key()[-6:])  # free-tier key: Pro never available
-                    if not (quota or "overloaded" in last):
+                    if retired:
+                        retire_model(model)  # Google listed it but refuses it: never pick it again
+                        last = f"{model} is no longer available to this API key."
+                    if not (quota or busy or retired):
                         raise RuntimeError(last) from e
-                    if not quota:
+                    if busy:
                         busy_models.append(model)
-                    print(f"Gemini {model}: {'no quota left' if quota else 'overloaded'}, trying next")
+                    print(f"Gemini {model}: {'no quota left' if quota else 'overloaded' if busy else 'retired'}, trying next")
             if not busy_models or round_no == 1:
                 break
             todo = busy_models
