@@ -255,8 +255,23 @@ def start():
     if st.get("running"): return jsonify(error="Already editing."), 409
     o = body.get("options", {})
     box = lambda b: [float(v) for v in b][:4] if isinstance(b, list) and len(b) == 4 else None
+    focus = []
+    for f in (o.get("focus") or [])[:20]:
+        try:
+            a = None if f.get("start") in (None, "") else float(f["start"])
+            b = None if f.get("end") in (None, "") else float(f["end"])
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if a is not None and b is not None and b < a: a, b = b, a
+        if a is not None and (b is None or b - a < 0.3): b = a + 3.0     # a single mark = the 3s after it
+        note = str(f.get("note") or "").strip()[:200]
+        if a is not None or note: focus.append(dict(start=a, end=b if a is not None else None, note=note))
     s = pipeline.Settings(
-        layout="split" if o.get("layout") == "split" else "full",
+        layout=o.get("layout") if o.get("layout") in ("split", "framed") else "full",
+        heavy=bool(o.get("heavy", False)),
+        title=str(o.get("title") or "").strip()[:120],
+        handle=str(o.get("handle") or "").strip()[:40],
+        focus=focus,
         split_ratio=float(o.get("split_ratio") or 0.42),
         face_box=box(o.get("face_box")),
         game_box=box(o.get("game_box")),
@@ -399,7 +414,8 @@ def claude_settings():
 def get_config():
     c = load_config()
     return jsonify(has_key=bool(c.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")),
-                   base_url=c.get("anthropic_base_url", ""), model=c.get("anthropic_model", ""))
+                   base_url=c.get("anthropic_base_url", ""), model=c.get("anthropic_model", ""),
+                   free=bool(c.get("anthropic_api_key")) and "coarena" in c.get("anthropic_base_url", ""))
 
 
 @bp.post("/api/config")

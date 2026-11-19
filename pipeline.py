@@ -17,6 +17,8 @@ from dataclasses import dataclass, field, asdict
 import cv2
 import numpy as np
 
+import fx as vfx
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FACE_MODEL = os.path.join(HERE, "models", "face_detection_yunet_2023mar.onnx")
 
@@ -46,6 +48,11 @@ class Settings:
     split_ratio: float = 0.42          # share of the height used by the facecam panel
     face_box: list | None = None       # [x, y, w, h] normalized 0-1 in the source; None = auto
     game_box: list | None = None
+    # "framed" layout = black meme frame: title on top, square video, channel handle below (always 9:16)
+    heavy: bool = False                # heavy edit: zooms, shake, flashes, circles + arrows, emoji pops
+    title: str = ""                    # framed layout: the title above the video ("" = AI hook text, if any)
+    handle: str = ""                   # framed layout: channel handle under the video, e.g. @mychannel
+    focus: list = field(default_factory=list)  # must-show moments: [{"start": s, "end": s, "note": str}]
 
 
 @dataclass
@@ -63,6 +70,7 @@ class Plan:
     summary: str = ""
     hook: dict | None = None                        # {"text", "glow_words", "color", "seconds"} or None
     unsupported: list = field(default_factory=list)  # requests the editor couldn't carry out
+    effects: list = field(default_factory=list)      # [{"index", "kind", "emoji", "text", "color"}] heavy-edit beats
 
 
 class Job:
@@ -122,7 +130,35 @@ def transcribe(src, job: Job, settings: Settings, dur: float):
 def build_segments(words, plan: Plan, s: Settings, dur: float):
     """Kept words -> list of (start, end, [word indices]) with dead air removed.
 
-    A time-based plan (from a model that watched the video) is kept as-is, silent action included."""
+    A time-based plan (from a model that watched the video) is kept as-is, silent action included.
+    Must-show moments (s.focus) are always added back in, even if the plan cut them."""
+    out = _plan_segments(words, plan, s, dur)
+    spans = [(max(0.0, float(f["start"])), min(dur, float(f["end"]))) for f in s.focus
+             if f.get("start") is not None and f.get("end") is not None and float(f["end"]) > float(f["start"])]
+    if not spans: return out
+    # snap focus edges out of the middle of words, then merge with the plan's segments
+    for k, (a, b) in enumerate(spans):
+        for w in words:
+            if w.start < a < w.end: a = w.start
+            if w.start < b < w.end: b = w.end
+        spans[k] = (a, b)
+    allr = sorted([(a, b) for a, b, _ in out] + spans)
+    merged = []
+    for a, b in allr:
+        if merged and a <= merged[-1][1] + 0.05: merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else: merged.append((a, b))
+    kept = {i for _, _, idx in out for i in idx}
+    res = []
+    for a, b in merged:
+        # inside a focus span keep every word; elsewhere keep only the words the plan kept
+        in_focus = lambda m: any(fa <= m < fb for fa, fb in spans)
+        idx = [i for i, w in enumerate(words) if a <= (w.start + w.end) / 2 < b
+               and (i in kept or in_focus((w.start + w.end) / 2))]
+        res.append((a, b, idx))
+    return res
+
+
+def _plan_segments(words, plan: Plan, s: Settings, dur: float):
     if plan.keep_times:
         out = []
         for a, b in plan.keep_times:
@@ -490,31 +526,124 @@ def _hook_event(hook, ow, y, fs, total, t):
     return "\n".join(rows)
 
 
-def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
-    ow, oh = geo["ow"], geo["oh"]
-    font = resolve_font(s.caption_font)
-    fs = round(oh * 0.032) if ow / oh < 0.6 else round(oh * 0.036)
-    if geo.get("layout") == "split":   # "middle" sits on the seam between facecam and gameplay
-        th = geo["top_h"]
-        y = {"top": th * 0.16, "middle": th, "bottom": oh * 0.86}.get(s.caption_position, th)
-    else:
-        y = {"top": 0.22, "middle": 0.52, "bottom": 0.78}.get(s.caption_position, 0.52) * oh
-    hook_y = oh * 0.10
-    if plan.hook and s.caption_position == "top":
-        y = max(y, oh * 0.24)   # keep top captions clear of the hook title
-    max_chars = 18 if ow / oh < 0.7 else 24
-    # map source word times -> output timeline
+def output_timeline(words, segments):
+    """Source word times -> output timeline: ([(word idx, start, end)], total length)."""
     timeline, t_out = [], 0.0
     for a, b, idx in segments:
         for i in idx:
             w = words[i]
             timeline.append((i, t_out + max(0, w.start - a), t_out + min(b - a, w.end - a)))
         t_out += b - a
-    total = t_out
+    return timeline, t_out
+
+
+def _text_width(font, size, text):
+    try:
+        from PIL import ImageFont
+        return ImageFont.truetype(font["path"], size).getlength(text)
+    except Exception:
+        return len(text) * size * 0.55
+
+
+YT_LOGO = ("m 22 0 l 98 0 b 110 0 120 10 120 22 l 120 62 b 120 74 110 84 98 84 l 22 84 b 10 84 0 74 0 62 "
+           "l 0 22 b 0 10 10 0 22 0")
+YT_PLAY = "m 47 24 l 79 42 l 47 60"
+
+
+def _frame_events(s: Settings, plan: Plan, font, ow, oh, total, t):
+    """Meme-frame title (white, chosen words coloured) and the channel handle with a YouTube logo."""
+    rows = []
+    hook = plan.hook or {}
+    title = s.title.strip() or hook.get("text", "")
+    if title:
+        glow = {re.sub(r"[^\w]", "", w.lower()) for g in hook.get("glow_words", []) for w in g.split()} - {""}
+        cols = [hook.get("color") or "green", "red", "yellow", "cyan"]
+        fs_t = round(oh * 0.029)
+        parts, line_len, c = [], 0, 0
+        for word in title.split():
+            wd = _esc(word)
+            if line_len and line_len + 1 + len(wd) > 28: parts.append(r"\N"); line_len = 0
+            elif line_len: parts.append(" "); line_len += 1
+            if re.sub(r"[^\w]", "", wd.lower()) in glow:
+                col = _bgr(COLORS.get(cols[c % len(cols)], COLORS["green"]))
+                parts.append("{" + rf"\1c{col}" + "}" + wd + r"{\1c&HFFFFFF&}"); c += 1
+            else:
+                parts.append(wd)
+            line_len += len(wd)
+        head = "{" + rf"\an2\pos({ow / 2:.0f},300)\fsp0\fs{fs_t}\1c&HFFFFFF&\bord{fs_t * 0.05:.1f}\shad0\3c&H000000&" + "}"
+        rows.append(f"Dialogue: 3,{t(0)},{t(total)},Cap,,0,0,0,,{head}{''.join(parts)}")
+    if s.handle.strip():
+        h = s.handle.strip()
+        h = h if h.startswith("@") else "@" + h
+        fs_h = round(oh * 0.036)
+        logo_w = fs_h * 1.25
+        tw = _text_width(font, fs_h, h)
+        x0 = ow / 2 - (logo_w + fs_h * 0.25 + tw) / 2
+        yc = 1585
+        sc = logo_w / 120 * 100
+        at = rf"\an7\pos({x0:.0f},{yc - logo_w * 0.35:.0f})\fscx{sc:.0f}\fscy{sc:.0f}\bord0\shad0"
+        rows.append(f"Dialogue: 3,{t(0)},{t(total)},Cap,,0,0,0,,{{{at}\\1c&H0000FF&\\p1}}{YT_LOGO}{{\\p0}}")
+        rows.append(f"Dialogue: 4,{t(0)},{t(total)},Cap,,0,0,0,,{{{at}\\1c&HFFFFFF&\\p1}}{YT_PLAY}{{\\p0}}")
+        rows.append(f"Dialogue: 3,{t(0)},{t(total)},Cap,,0,0,0,,"
+                    + "{" + rf"\an4\pos({x0 + logo_w + fs_h * 0.25:.0f},{yc:.0f})\fs{fs_h}\1c&HFFFFFF&"
+                    rf"\bord{fs_h * 0.04:.1f}\shad0\fsp0" + "}" + _esc(h))
+    return rows
+
+
+def _callout_events(events, geo, fs, t, font=None):
+    """Big glowing text bursts ("NO WAY", "LEVEL 1") that pop in beside the subject."""
+    ow, oh = geo["ow"], geo["oh"]
+    font = font or resolve_font("")
+    if geo.get("layout") == "framed": top, ph = geo["panel_y"], geo["panel_h"]
+    elif geo.get("layout") == "split": top, ph = 0, geo["top_h"]
+    else: top, ph = 0, oh
+    rows, side = [], 1
+    for e in events:
+        txt = _esc(str(e.get("text") or "").strip())
+        if not txt: continue
+        col = _bgr(COLORS.get(e.get("color") or "magenta", COLORS["magenta"]))
+        cs = round(fs * 1.45)
+        # letter spacing from the style + the pop overshoot; shrink long text, then keep it inside the frame
+        tw = (_text_width(font, cs, txt) + len(txt) * fs * 0.16) * 1.15
+        if tw > ow * 0.9: cs = round(cs * ow * 0.9 / tw); tw = ow * 0.9
+        x = ow * (0.5 + 0.22 * side); y = top + ph * 0.3
+        x = min(max(x, tw / 2 + ow * 0.04), ow - tw / 2 - ow * 0.04)
+        rot = -7 * side; side = -side
+        pop = r"\fscx40\fscy40\t(0,140,\fscx115\fscy115)\t(140,240,\fscx100\fscy100)"
+        base = rf"\an5\pos({x:.0f},{y:.0f})\frz{rot}\fad(60,180)\fs{cs}" + pop
+        a, b = e["t"], max(e["end"], e["t"] + 1.0)
+        rows.append(f"Dialogue: 5,{t(a)},{t(b)},Cap,,0,0,0,,"
+                    + "{" + base + rf"\1c{col}\3c{col}\1a&H40&\bord{cs * 0.22:.1f}\blur{cs * 0.45:.1f}\shad0" + "}" + txt)
+        rows.append(f"Dialogue: 6,{t(a)},{t(b)},Cap,,0,0,0,,"
+                    + "{" + base + rf"\1c&HFFFFFF&\3c{col}\bord{cs * 0.06:.1f}\shad0" + "}" + txt)
+    return rows
+
+
+def build_ass(words, segments, plan: Plan, s: Settings, geo, path, events=()):
+    ow, oh = geo["ow"], geo["oh"]
+    framed = geo.get("layout") == "framed"
+    font = resolve_font(s.caption_font)
+    fs = round(oh * 0.032) if ow / oh < 0.6 else round(oh * 0.036)
+    wpp = s.words_per_page
+    if framed:   # like the meme-frame shorts: one word at a time, low in the video
+        y = geo["panel_y"] + geo["panel_h"] * {"top": 0.2, "middle": 0.74, "bottom": 0.86}.get(s.caption_position, 0.74)
+        fs, wpp = round(oh * 0.03), 1
+    elif geo.get("layout") == "split":   # "middle" sits on the seam between facecam and gameplay
+        th = geo["top_h"]
+        y = {"top": th * 0.16, "middle": th, "bottom": oh * 0.86}.get(s.caption_position, th)
+    else:
+        y = {"top": 0.22, "middle": 0.52, "bottom": 0.78}.get(s.caption_position, 0.52) * oh
+    if s.heavy and not framed:
+        fs, wpp = round(fs * 1.18), min(wpp, 3)
+    hook_y = oh * 0.10
+    if plan.hook and s.caption_position == "top" and not framed:
+        y = max(y, oh * 0.24)   # keep top captions clear of the hook title
+    max_chars = 18 if ow / oh < 0.7 else 24
+    timeline, total = output_timeline(words, segments)
     # pages
     pages, cur = [], []
     for j, (i, st, en) in enumerate(timeline):
-        if cur and (len(cur) >= s.words_per_page or st - cur[-1][2] > 0.6):
+        if cur and (len(cur) >= wpp or st - cur[-1][2] > 0.6):
             pages.append(cur); cur = []
         cur.append((i, st, en))
         if words[i].text[-1:] in ".?!" and len(cur) >= 2:
@@ -533,12 +662,24 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
         f"Style: Cap,{font['family'].replace(',', ' ')},{fs},&H00FFFFFF,&H00FFFFFF,&H90000000,&H80000000,{-1 if font['bold'] else 0},0,0,0,100,100,{fs * 0.16:.1f},0,1,{fs * 0.05:.1f},{fs * 0.07:.1f},5,40,40,0,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    if plan.hook:
+    if framed:
+        lines += _frame_events(s, plan, font, ow, oh, total, t)
+    elif plan.hook:
         lines.append(_hook_event(plan.hook, ow, hook_y, fs, total, t))
+    lines += _callout_events(events, geo, fs, t, font)
     for p, page in enumerate(pages if s.captions else []):
         start = page[0][1]
         nxt = pages[p + 1][0][1] if p + 1 < len(pages) else page[-1][2] + 0.8
         end = min(nxt, page[-1][2] + 0.8)
+        if framed:
+            i = page[0][0]
+            word = _esc(words[i].text.strip(".,!?;:\"").lower() or words[i].text)
+            col = plan.highlights.get(i) if plan.highlights.get(i) in COLORS else None
+            fill = _bgr(COLORS[col]) if col else "&HFFFFFF&"
+            text = ("{" + rf"\pos({ow / 2:.0f},{y:.0f})\1c{fill}\3c&H000000&\bord{fs * 0.13:.1f}\shad0\fsp0"
+                    r"\fscx75\fscy75\t(0,90,\fscx108\fscy108)\t(90,160,\fscx100\fscy100)" + "}" + word)
+            lines.append(f"Dialogue: 0,{t(start)},{t(end)},Cap,,0,0,0,,{text}")
+            continue
         # manual line wrap
         out, line_len = [], 0
         for k, (i, st, en) in enumerate(page):
@@ -558,6 +699,9 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path):
                 tags += f"\\3c{fill}\\bord{fs * 0.09:.1f}\\blur{fs * 0.3:.1f}"
             else:
                 tags += f"\\3c&H000000&\\bord{fs * 0.05:.1f}\\blur{fs * 0.08:.1f}"
+            if s.heavy:   # each word punches in as it is spoken
+                tags += (f"\\fscx100\\fscy100\\t({rel},{rel + 80},\\fscx125\\fscy125)"
+                         f"\\t({rel + 80},{rel + 180},\\fscx100\\fscy100)")
             out.append(tags + "}" + word)
             line_len += len(word)
         text = f"{{\\pos({ow / 2:.0f},{y:.0f})\\fad(0,90)}}" + "".join(out)
@@ -593,8 +737,22 @@ def build_vignette(geo, path, strength=0.62):
 
 
 # ---------------------------------------------------------------- 6. render
-def full_composer(pos, geo, info):
-    """Full layout: one face-following crop scaled to the output size."""
+def face_lookup(faces, fps):
+    """frame index -> nearest detected face (x, y, height) in source px, or None if none within ~0.4s."""
+    import bisect
+    keys = sorted(faces)
+    reach = max(2, int(fps * 0.4))
+
+    def at(i):
+        if not keys: return None
+        k = bisect.bisect_left(keys, i)
+        best = min((keys[j] for j in (k - 1, k) if 0 <= j < len(keys)), key=lambda n: abs(n - i))
+        return faces[best] if abs(best - i) <= reach else None
+    return at
+
+
+def full_composer(pos, geo, info, face_at=None):
+    """Full layout: one face-following crop scaled to the output size. Returns (frame, face in output px)."""
     ow, oh, cw, ch = geo["ow"], geo["oh"], geo["cw"], geo["ch"]
     sc = ow / cw
 
@@ -605,11 +763,13 @@ def full_composer(pos, geo, info):
         else:
             x0, y0 = 0.0, (c if c is not None else info["h"] * 0.4) - ch / 2
         M = np.float32([[sc, 0, -x0 * sc], [0, sc, -y0 * sc]])
-        return cv2.warpAffine(f, M, (ow, oh), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        img = cv2.warpAffine(f, M, (ow, oh), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        fc = face_at(i) if face_at else None
+        return img, ((fc[0] - x0) * sc, (fc[1] - y0) * sc, fc[2] * sc) if fc else None
     return compose
 
 
-def split_composer(px, py, geo, zoom):
+def split_composer(px, py, geo, zoom, face_at=None):
     """Split layout: face-following facecam crop on top, fixed gameplay crop below."""
     ow, top_h, bot_h = geo["ow"], geo["top_h"], geo["bot_h"]
     fx, fy, fw, fh = geo["face"]
@@ -627,7 +787,8 @@ def split_composer(px, py, geo, zoom):
         bot = cv2.warpAffine(f, Mg, (ow, bot_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
         out = np.vstack([top, bot])
         out[top_h - 2:top_h + 2] = seam            # thin dark divider
-        return out
+        fc = face_at(i) if face_at else None
+        return out, ((fc[0] - x0) * st, (fc[1] - y0) * st, fc[2] * st) if fc else None
     return compose
 
 
@@ -651,13 +812,17 @@ def render(src, info, segments, compose, geo, s: Settings, workdir, out_path, mu
         fc.append(f"[0:v][{idx}:v]overlay=0:0:format=auto[v0]"); idx += 1
     else:
         fc.append("[0:v]null[v0]")
+    if s.heavy:   # punchy colour grade: more saturation and contrast
+        fc.append("[v0]eq=saturation=1.32:contrast=1.07:gamma=0.98,unsharp=5:5:0.6[v0x]")
+    else:
+        fc.append("[v0]null[v0x]")
     if use_captions:
         fonts = os.path.join(workdir, "fonts"); os.makedirs(fonts, exist_ok=True)
         font = resolve_font(s.caption_font)
         if font["path"]: shutil.copy(font["path"], fonts)
-        fc.append("[v0]ass=captions.ass:fontsdir=fonts,format=yuv420p[v]")
+        fc.append("[v0x]ass=captions.ass:fontsdir=fonts,format=yuv420p[v]")
     else:
-        fc.append("[v0]format=yuv420p[v]")
+        fc.append("[v0x]format=yuv420p[v]")
     if music and s.music:
         inputs += ["-stream_loop", "-1", "-i", music]
         gain = 10 ** (s.music_level_db / 20) * 0.5
@@ -688,7 +853,7 @@ def render(src, info, segments, compose, geo, s: Settings, workdir, out_path, mu
                 i += 1; continue
             ok, f = cap.read()
             if not ok: break
-            frame = compose(f, i)
+            frame = compose(f, i, written / fps)
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
             written += 1; i += 1
             if written % 20 == 0: job.stage("Rendering", written / max(n_out, 1))
@@ -738,6 +903,7 @@ def edit(src, out_path, instructions="", settings: Settings | None = None, music
     ranges = [(round(a * fps), round(b * fps)) for a, b, _ in segments]
     frames = [n for a, b in ranges for n in range(a, b)]
     job.stage("Tracking faces", 0)
+    face_at = None
     if s.layout == "split":
         geo = split_setup(src, info, s)
         if geo["auto"]:
@@ -750,16 +916,68 @@ def edit(src, out_path, instructions="", settings: Settings | None = None, music
         ww, wh = fw / zoom, fh / zoom
         px = smooth_track(frames, faces, cuts, 0, ww, fx + ww / 2, fx + fw - ww / 2, fx + fw / 2, fps)
         py = smooth_track(frames, faces, cuts, 1, wh, fy + wh / 2, fy + fh - wh / 2, fy + fh / 2, fps)
-        compose = split_composer(px, py, geo, zoom)
+        compose = split_composer(px, py, geo, zoom, face_lookup(faces, fps))
+        region = (0, geo["top_h"])
     else:
-        geo = _crop_geometry(info["w"], info["h"], s.aspect)
+        framed = s.layout == "framed"
+        geo = _crop_geometry(info["w"], info["h"], "1:1" if framed else s.aspect)
         faces, cuts = analyze(src, info, ranges, job)
         cuts |= {n0 for n0, _ in ranges}
-        compose = full_composer(camera_path(frames, faces, cuts, geo, info), geo, info)
+        compose = full_composer(camera_path(frames, faces, cuts, geo, info), geo, info, face_lookup(faces, fps))
+        region = None
+        if framed:   # the square video sits inside the black meme frame
+            geo = dict(geo, layout="framed", ow=vfx.FRAME_W, oh=vfx.FRAME_H, panel_y=vfx.FRAME_TOP, panel_h=geo["oh"])
 
-    use_captions = s.captions or bool(plan.hook)
+    # heavy-edit beats on the output timeline
+    timeline, total = output_timeline(words, segments)
+    word_t = {i: (st, en) for i, st, en in timeline}
+    events = []
+    for e in plan.effects:
+        if e.get("index") in word_t:
+            st, en = word_t[e["index"]]
+            kind = e.get("kind") or "zoom"
+            dur = {"circle": 1.5, "emoji": 1.1, "shake": 0.35, "flash": 0.2}.get(kind, max(0.5, en - st + 0.3))
+            events.append(dict(e, kind=kind, t=st, end=st + dur))
+    focus_out, t_out = [], 0.0
+    for a, b, _ in segments:
+        for f in s.focus:
+            if f.get("start") is None or f.get("end") is None: continue
+            fa, fb = max(a, float(f["start"])), min(b, float(f["end"]))
+            if fb > fa: focus_out.append((t_out + fa - a, t_out + fb - a))
+        t_out += b - a
+    if s.heavy and not events:
+        events = vfx.auto_events(timeline, plan.highlights, focus_out, total)
+    elif s.heavy:
+        events += [dict(t=a, end=min(total, a + 1.6), kind="circle", color="red") for a, _ in focus_out]
+    events = vfx.clean_events(events, total) if s.heavy else []
+    # flash + punch only on real jumps (big skips in the source), not on every removed pause
+    big_cuts, t_out, last = [], 0.0, -9.0
+    for k, (a, b, _) in enumerate(segments):
+        if k and a - segments[k - 1][1] > 1.0 and t_out - last >= 2.5:
+            big_cuts.append(t_out); last = t_out
+        t_out += b - a
+    effects = vfx.Effects(events, big_cuts, fps, (geo["ow"], geo["oh"]), heavy=s.heavy, region=region, colors=COLORS)
+    wrap = vfx.framed_wrap(compose) if geo.get("layout") == "framed" else None
+    title_emoji = (plan.hook or {}).get("emoji") or ("😭" if (s.title or plan.hook) else "")
+    base = compose
+
+    def compose(f, i, t):
+        img, face = base(f, i)
+        img = effects.apply(img, face, t)
+        if wrap:
+            img = wrap(img)
+            if title_emoji: vfx.frame_title_emoji(img, title_emoji)
+        return img
+    if s.heavy:
+        kinds = {}
+        for e in events: kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+        job.log("Heavy edit: " + (", ".join(f"{v} {k}" for k, v in kinds.items()) or "colour grade only")
+                + f", {len(big_cuts)} flash cuts.")
+
+    if geo.get("layout") == "framed": s.vignette = False   # the frame is already black around the video
+    use_captions = s.captions or bool(plan.hook) or geo.get("layout") == "framed" or any(e.get("text") for e in events)
     if use_captions:
-        n = build_ass(words, segments, plan, s, geo, os.path.join(workdir, "captions.ass"))
+        n = build_ass(words, segments, plan, s, geo, os.path.join(workdir, "captions.ass"), events)
         if s.captions: job.log(f"Captions: {n} pages, {len(plan.highlights)} highlighted words.")
         if plan.hook: job.log(f"Hook text: \"{plan.hook['text']}\"" +
                               (f" (glowing: {', '.join(plan.hook['glow_words'])})" if plan.hook["glow_words"] else ""))

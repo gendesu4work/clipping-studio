@@ -32,7 +32,7 @@ class Highlight(BaseModel):
 
 class EditSettings(BaseModel):
     aspect: Literal["keep", "9:16", "3:4", "4:5", "1:1"]
-    layout: Literal["keep", "full", "split"]
+    layout: Literal["keep", "full", "split", "framed"]
     captions: Literal["keep", "on", "off"]
     caption_position: Literal["keep", "top", "middle", "bottom"]
     vignette: Literal["keep", "on", "off"]
@@ -73,8 +73,10 @@ carefully, picture AND sound, then plan the edit.
    below; "full" = one face-following crop.
 4. hook: an on-screen title at the top, ONLY if the creator asks for hook text / a title / text on screen;
    otherwise text "". glow_words = words of the hook to glow, color = glow colour, seconds = 0 unless told.
-5. unsupported: anything the creator asked for that the fields above can't do (zooms, sound effects,
-   stickers, emojis, transitions, slow motion, filters...), each as a short phrase. Empty list if none.
+5. unsupported: anything the creator asked for that the fields above can't do (sound effects, slow motion,
+   B-roll...), each as a short phrase. Empty list if none. Zooms, shakes, flashes, circles, arrows, emojis and
+   colour grading are added automatically when HEAVY EDIT is on, so never list those, and always keep the
+   MUST-SHOW moments.
 summary: one sentence about the edit. Only describe what the fields above actually do.
 
 Creator's instructions:

@@ -1,7 +1,8 @@
 """Director: turns the transcript + your plain-English instructions into an edit plan.
 
-Uses Claude when an Anthropic API key is available (smart story cuts, semantic
-keyword highlights); otherwise falls back to built-in rules.
+Uses an AI model when a key is set (by default Coarena's free model through its Anthropic-compatible
+address; a normal Anthropic key also works) for smart story cuts, semantic keyword highlights and heavy-edit
+beats; otherwise falls back to built-in rules.
 """
 from __future__ import annotations
 
@@ -30,15 +31,24 @@ Decide:
    green = positive/money/success, magenta = playful/flirty, orange = general energy, cyan = calm/tech.
 3. settings: apply anything the creator said about format (aspect ratio, layout, captions on/off and position,
    vignette, music). layout "split" = facecam/reaction on top and gameplay below (gaming clips); "full" = one
-   face-following crop. Use "keep" for anything they did not mention.
+   face-following crop; "framed" = black meme frame with a title above a square video and the channel handle
+   below. Use "keep" for anything they did not mention.
 4. hook: an on-screen title shown at the top of the video. Fill it in when the creator asks for hook text, a title,
    a headline or text on screen; otherwise leave text "". Keep it short and punchy (max ~8 words), in the creator's
    words if they gave them. glow_words = the words of the hook that should glow (exact words from the hook text,
    e.g. the ones the creator asked to glow or highlight), color = the glow colour. seconds = how long it stays on
-   screen from the start (0 = the whole video; use 0 unless the creator says otherwise).
-5. unsupported: anything the creator asked for that this editor can NOT do with the fields above (for example
-   zooms, sound effects, stickers, emojis, transitions, slow motion, filters, B-roll, memes), each as a short
-   phrase quoting their request. Empty list if everything was handled.
+   screen from the start (0 = the whole video; use 0 unless the creator says otherwise). emoji = one emoji that
+   fits the hook's mood (shown under the title in the framed layout), e.g. a crying-laughing or skull emoji.
+5. effects: heavy-edit beats, ONLY when the brief says HEAVY EDIT is on; otherwise an empty list. Each beat sits
+   on a kept word (index) and has a kind: "zoom" (punch-in on the speaker), "circle" (red circle + arrow on the
+   speaker, for the big reveal / most important moment), "shake" (camera shake on a shocking word), "flash"
+   (white flash), "emoji" (a colour emoji pops up; put it in emoji). text = optional short glowing callout shown
+   beside the speaker (1-3 words, e.g. "NO WAY", "LEVEL 1"), "" for none. color = the circle / callout colour.
+   Aim for a beat every 1.5-3 seconds, a circle at most every 4 seconds, and put the strongest beats on the
+   must-show moments.
+6. unsupported: anything the creator asked for that this editor can NOT do with the fields above (for example
+   sound effects, slow motion, B-roll, green screen), each as a short phrase quoting their request. Empty list
+   if everything was handled.
 Write a one-sentence summary of the edit you made. Only describe what the fields above actually do: never claim an
 effect that is listed in unsupported."""
 
@@ -57,7 +67,7 @@ SCHEMA = {
             "type": "object",
             "properties": {
                 "aspect": {"type": "string", "enum": ["keep", "9:16", "3:4", "4:5", "1:1"]},
-                "layout": {"type": "string", "enum": ["keep", "full", "split"]},
+                "layout": {"type": "string", "enum": ["keep", "full", "split", "framed"]},
                 "captions": {"type": "string", "enum": ["keep", "on", "off"]},
                 "caption_position": {"type": "string", "enum": ["keep", "top", "middle", "bottom"]},
                 "vignette": {"type": "string", "enum": ["keep", "on", "off"]},
@@ -72,13 +82,21 @@ SCHEMA = {
                 "glow_words": {"type": "array", "items": {"type": "string"}},
                 "color": {"type": "string", "enum": list(COLORS)},
                 "seconds": {"type": "number"},
+                "emoji": {"type": "string"},
             },
-            "required": ["text", "glow_words", "color", "seconds"],
+            "required": ["text", "glow_words", "color", "seconds", "emoji"],
             "additionalProperties": False},
+        "effects": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"index": {"type": "integer"},
+                           "kind": {"type": "string", "enum": ["zoom", "circle", "shake", "flash", "emoji"]},
+                           "emoji": {"type": "string"}, "text": {"type": "string"},
+                           "color": {"type": "string", "enum": list(COLORS)}},
+            "required": ["index", "kind", "emoji", "text", "color"], "additionalProperties": False}},
         "unsupported": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
     },
-    "required": ["keep", "highlights", "settings", "hook", "unsupported", "summary"],
+    "required": ["keep", "highlights", "settings", "hook", "effects", "unsupported", "summary"],
     "additionalProperties": False,
 }
 
@@ -108,6 +126,9 @@ TEXT_RULES = [
     (r"1\s*[:x/]\s*1|square", lambda s, m: replace(s, aspect="1:1")),
     (r"split|face ?cam|webcam|gameplay|gaming|reaction (on )?top", lambda s, m: replace(s, layout="split")),
     (r"full ?(frame|screen)|no split", lambda s, m: replace(s, layout="full")),
+    (r"meme ?frame|black (frame|border|bars)|framed", lambda s, m: replace(s, layout="framed")),
+    (r"heavy|lots of (effects|edits)|crazy edit|zooms?\b|circles?\b|arrows?\b|emojis?\b|shakes?\b|flash",
+     lambda s, m: replace(s, heavy=True)),
     (r"no (sub|caption)|without (sub|caption)|captions? off", lambda s, m: replace(s, captions=False)),
     (r"no vignette|without (a )?vignette|vignette off", lambda s, m: replace(s, vignette=False)),
     (r"no music|without music|music off", lambda s, m: replace(s, music=False)),
@@ -185,6 +206,13 @@ def rules_plan(words, instructions, s: Settings):
 
 # ------------------------------------------------------------------ Claude
 DEFAULT_MODEL = "claude-opus-5-5"
+FREE_MODEL = "gpt-6-luna"          # Coarena's free model
+
+
+def _model(c):
+    c = c or {}
+    if c.get("model"): return c["model"]
+    return FREE_MODEL if "coarena" in (c.get("base_url") or "") else DEFAULT_MODEL
 
 
 def make_client(claude: dict | None):
@@ -201,7 +229,7 @@ def check_key(claude: dict) -> str | None:
     """Make one tiny request with these settings. Returns None if it works, else a readable error."""
     import anthropic
     try:
-        make_client(claude).messages.create(model=claude.get("model") or DEFAULT_MODEL, max_tokens=5,
+        make_client(claude).messages.create(model=_model(claude), max_tokens=5,
                                             messages=[{"role": "user", "content": "Say ok"}])
         return None
     except anthropic.AuthenticationError:
@@ -226,18 +254,37 @@ def _short(e):
 
 def _parse_json(text):
     m = re.search(r"\{.*\}", text, re.S)
-    if not m: raise RuntimeError("Claude's reply had no JSON plan")
+    if not m: raise RuntimeError("the AI's reply had no JSON plan")
     return json.loads(m.group(0))
+
+
+def brief_text(instructions, s: Settings):
+    """The creator's instructions plus what they set in the app (must-show moments, heavy edit)."""
+    out = instructions.strip() or "(none - make a clean, tight edit)"
+    moments = []
+    for f in s.focus:
+        note = str(f.get("note") or "").strip()
+        if f.get("start") is not None and f.get("end") is not None:
+            moments.append(f"- {float(f['start']):.1f}s to {float(f['end']):.1f}s" + (f": {note}" if note else ""))
+        elif note:
+            moments.append(f"- {note}")
+    if moments:
+        out += ("\n\nMUST-SHOW moments (always keep these, even if it makes the video longer, and make them stand "
+                "out):\n" + "\n".join(moments))
+    out += "\n\nHEAVY EDIT: " + ("ON - fill effects with lots of beats." if s.heavy else "off - effects must be [].")
+    if s.layout == "framed" and not s.title.strip():
+        out += "\nThe video uses the framed layout: write a short hook title for the top (hook.text)."
+    return out
 
 
 def claude_plan(words, instructions, claude, job):
     client = make_client(claude)
-    model = (claude or {}).get("model") or DEFAULT_MODEL
-    user = (f"Creator's instructions:\n{instructions.strip() or '(none - make a clean, tight edit)'}\n\n"
+    model = _model(claude)
+    user = (f"Creator's instructions:\n{instructions}\n\n"
             f"Transcript ({len(words)} words, total {words[-1].end:.1f}s; format index:word):\n{_transcript_text(words)}")
     if (claude or {}).get("base_url"):
         # Resellers often don't support Anthropic's newer options, so ask for JSON in plain words.
-        job.log(f"Asking Claude ({model}, via {claude['base_url']}) to plan the edit...")
+        job.log(f"Asking the AI ({model}, via {claude['base_url']}) to plan the edit...")
         resp = client.messages.create(
             model=model,
             max_tokens=16000,
@@ -257,14 +304,15 @@ def claude_plan(words, instructions, claude, job):
             messages=[{"role": "user", "content": user}],
         )
     if resp.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to plan this edit")
+        raise RuntimeError("the AI declined to plan this edit")
     if resp.stop_reason == "max_tokens":
-        raise RuntimeError("Claude's plan was cut off")
+        raise RuntimeError("the AI's plan was cut off")
     data = _parse_json(next(b.text for b in resp.content if b.type == "text"))
     for k, v in {"aspect": "keep", "layout": "keep", "captions": "keep", "caption_position": "keep",
                  "vignette": "keep", "music": "keep"}.items():
         data.setdefault("settings", {}).setdefault(k, v)
     data.setdefault("highlights", []); data.setdefault("summary", ""); data.setdefault("unsupported", [])
+    data.setdefault("effects", [])
     n = len(words)
     keep = [(max(0, r["from"]), min(n - 1, r["to"])) for r in data["keep"] if r["from"] <= r["to"]]
     hl = {h["index"]: h["color"] for h in data["highlights"] if 0 <= h["index"] < n}
@@ -273,16 +321,26 @@ def claude_plan(words, instructions, claude, job):
     if str(h.get("text") or "").strip():
         hook = {"text": str(h["text"]).strip(), "glow_words": [str(w) for w in h.get("glow_words") or []],
                 "color": h.get("color") if h.get("color") in COLORS else "yellow",
-                "seconds": max(0.0, float(h.get("seconds") or 0))}
+                "seconds": max(0.0, float(h.get("seconds") or 0)), "emoji": str(h.get("emoji") or "").strip()[:8]}
     unsupported = [str(u).strip() for u in data["unsupported"] if str(u).strip()]
-    return Plan(keep=keep, highlights=hl, summary=data["summary"], hook=hook, unsupported=unsupported), data["settings"]
+    effects = []
+    for e in data["effects"] or []:
+        try:
+            if 0 <= int(e["index"]) < n and e.get("kind") in ("zoom", "circle", "shake", "flash", "emoji"):
+                effects.append({"index": int(e["index"]), "kind": e["kind"], "emoji": str(e.get("emoji") or "")[:8],
+                                "text": str(e.get("text") or "")[:24],
+                                "color": e.get("color") if e.get("color") in COLORS else "red"})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return (Plan(keep=keep, highlights=hl, summary=data["summary"], hook=hook, unsupported=unsupported,
+                 effects=effects), data["settings"])
 
 
 # The AI may only change a setting when the instructions talk about it; otherwise what the creator picked
 # in the app wins (models sometimes "helpfully" move captions or change the layout unasked).
 SETTING_TOPICS = {
     "aspect": r"\d\s*[:x/]\s*\d|vertical|horizontal|portrait|landscape|square|aspect|ratio|format|tiktok|reels?\b|shorts?\b",
-    "layout": r"split|face ?cam|webcam|\bcam\b|layout|full ?(frame|screen)|gameplay|reaction",
+    "layout": r"split|face ?cam|webcam|\bcam\b|layout|full ?(frame|screen)|gameplay|reaction|meme ?frame|framed|black (frame|border)",
     "captions": r"caption|subtitle|\bsubs?\b",
     "caption_position": r"caption|subtitle|\bsubs?\b",
     "vignette": r"vignette",
@@ -304,12 +362,13 @@ def _apply_settings(st, s: Settings, instructions: str = "") -> Settings:
 
 def make_plan(words, instructions, s: Settings, job, claude=None, video=None):
     s = _apply_text_settings(instructions or "", s)
+    brief = brief_text(instructions or "", s)
     # 1) Gemini watches the clip itself, so silent action isn't mistaken for dead air
     if video:
         try:
             import watcher
             if watcher.available():
-                plan, st = watcher.watch_plan(video["src"], video["workdir"], words, instructions or "",
+                plan, st = watcher.watch_plan(video["src"], video["workdir"], words, brief,
                                               video["dur"], job)
                 if plan.unsupported: job.log("Ignored: " + " | ".join(plan.unsupported))
                 return plan, _apply_settings(st, s, instructions)
@@ -317,20 +376,20 @@ def make_plan(words, instructions, s: Settings, job, claude=None, video=None):
             job.log(f"Gemini couldn't watch the clip ({_short(e)}); planning from the transcript instead.")
     if not words:
         raise RuntimeError("No speech found in the video, and Gemini couldn't watch it.")
-    # 2) Claude (or a reseller model) reads the transcript
+    # 2) The AI (Coarena's free model, or Claude with an Anthropic key) reads the transcript
     try:
-        import anthropic  # noqa: F401
-        plan, st = claude_plan(words, instructions or "", claude, job)
+        import anthropic  # noqa: F401  (Coarena speaks the same API, so the same client is used)
+        plan, st = claude_plan(words, brief, claude, job)
         s = _apply_settings(st, s, instructions)
-        if not plan.keep: raise RuntimeError("Claude returned an empty cut list")
+        if not plan.keep: raise RuntimeError("the AI returned an empty cut list")
         if plan.unsupported:
             job.log("Ignored: " + " | ".join(plan.unsupported))
         return plan, s
     except Exception as e:  # no key, network down, refusal... -> rules
         msg = str(e).splitlines()[0][:160] if str(e) else type(e).__name__
         if "api_key" in msg.lower() or "auth" in msg.lower() or "credential" in msg.lower():
-            msg = "no Anthropic API key set"
-        job.log(f"Claude not used ({msg}); using built-in rules.")
+            msg = "no AI key set"
+        job.log(f"AI not used ({msg}); using built-in rules.")
         plan = rules_plan(words, instructions or "", s)
         skipped = ununderstood_parts(instructions or "")
         if skipped:
