@@ -150,6 +150,44 @@ def _update_zip(token: str | None) -> bool:
     return changed > 0
 
 
+# ------------------------------------------------------- version (for the app's badge)
+def _is_git() -> bool:
+    return os.path.isdir(os.path.join(HERE, ".git")) and bool(shutil.which("git"))
+
+
+def installed_sha() -> str | None:
+    """The GitHub commit this copy of the app is on."""
+    try:
+        if _is_git():
+            return _run(["git", "rev-parse", "HEAD"]).stdout.strip() or None
+        with open(VERSION_FILE, encoding="utf-8") as f:
+            return f.read().strip() or None
+    except Exception:
+        return None
+
+
+def latest_sha() -> str | None:
+    """The newest commit on GitHub, or None if it couldn't be checked (offline, rate limit)."""
+    try:
+        if _is_git():
+            out = _run(["git", "ls-remote", "origin", f"refs/heads/{BRANCH}"], timeout=15).stdout.split()
+            return out[0] if out else None
+        token = os.environ.get("CREATOR_STUDIO_UPDATE_TOKEN") or _settings().get("update_token")
+        api = f"https://api.github.com/repos/{OWNER}/{REPO}/commits/{BRANCH}"
+        return json.loads(_get(api, token, 10))["sha"]
+    except Exception:
+        return None
+
+
+def packages_ready() -> bool:
+    """False while requirements.txt has packages that haven't installed successfully yet."""
+    try:
+        with open(REQS_DONE_FILE, encoding="utf-8") as f:
+            return f.read().strip() == _file_hash(os.path.join(HERE, "requirements.txt"))
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------- entry point
 def _python_exe() -> str:
     exe = sys.executable

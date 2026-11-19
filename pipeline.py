@@ -417,7 +417,10 @@ def font_catalog():
     for fn in SYSTEM_FONTS:
         p = os.path.join(sysdir, fn)
         if os.path.exists(p):
-            fam, bold, name = font_info(p)
+            try:
+                fam, bold, name = font_info(p)
+            except Exception:   # unreadable font: skip it rather than break the whole list
+                continue
             out.append(dict(id=fn, name=name, family=fam, bold=bold, path=p, custom=False))
     if os.path.isdir(USER_FONTS):
         for fn in sorted(os.listdir(USER_FONTS), key=str.lower):

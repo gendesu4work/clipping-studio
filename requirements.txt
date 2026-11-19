@@ -9,4 +9,5 @@ deno  # JavaScript runtime yt-dlp needs to unlock YouTube video formats
 google-genai
 pydantic
 pillow
+fonttools  # reads caption font names (ClipForge font picker and captions)
 static-ffmpeg  # downloads ffmpeg + ffprobe on PCs that don't have them
