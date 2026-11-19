@@ -201,6 +201,7 @@ def outputs_list():
             with open(p[:-4] + ".json", encoding="utf-8") as f: meta = json.load(f)
         except Exception:
             pass
+        meta.pop("transcript", None)
         items.append(dict(meta, name=fn, size=os.path.getsize(p), created=meta.get("created") or os.path.getmtime(p)))
     items.sort(key=lambda x: -x["created"])
     return jsonify(items=items)
@@ -218,6 +219,36 @@ def outputs_delete(name):
     os.remove(p)
     if os.path.exists(p[:-4] + ".json"): os.remove(p[:-4] + ".json")
     return jsonify(ok=True)
+
+
+@bp.post("/api/outputs/copy/<path:name>")
+def outputs_copy(name):
+    """Best caption, description and upload time for a short. Cached in its .json next to the video."""
+    import director
+    p = output_path(name)
+    meta_file = p[:-4] + ".json"
+    try:
+        with open(meta_file, encoding="utf-8") as f: meta = json.load(f)
+    except Exception:
+        meta = {}
+    body = request.get_json(silent=True) or {}
+    if (meta.get("copy") or {}).get("v") == director.COPY_VERSION and not body.get("refresh"):
+        return jsonify(meta["copy"])
+    try:
+        if "transcript" not in meta:      # transcribe the finished short itself (it's only ~1 minute)
+            s = pipeline.Settings()
+            words = pipeline.transcribe(p, pipeline.Job(), s, float(meta.get("duration") or 60))
+            meta["transcript"] = " ".join(w.text for w in words)
+        copy = director.social_copy(meta["transcript"], os.path.splitext(name)[0].replace(" (ClipForge)", ""),
+                                    meta.get("instructions", ""), str(body.get("tz") or ""), claude_settings())
+    except Exception as e:
+        msg = director._short(e) or type(e).__name__
+        if any(k in msg.lower() for k in ("api_key", "auth", "credential")):
+            msg = "No AI key set yet. Add one in ClipForge's AI settings, then try again."
+        return jsonify(error=msg), 502
+    meta["copy"] = copy
+    with open(meta_file, "w", encoding="utf-8") as f: json.dump(meta, f)
+    return jsonify(copy)
 
 
 # ------------------------------------------------------------- forge

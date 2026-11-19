@@ -398,3 +398,54 @@ def make_plan(words, instructions, s: Settings, job, claude=None, video=None):
         if skipped:
             job.log("Ignored: " + " | ".join(skipped))
         return plan, s
+
+
+# ------------------------------------------------------------ upload copy (My shorts)
+COPY_SYSTEM = """You write upload copy for short vertical videos (YouTube Shorts, TikTok, Instagram Reels),
+the way a real creator types it on their phone. Casual, punchy, a bit of personality. Never sound like an AI or a
+marketing team.
+Reply with ONLY a JSON object (no prose, no code fences):
+{"caption": "...", "description": "...", "hashtags": ["#..."],
+ "best_time": {"day": "...", "time": "...", "reason": "..."}}
+- caption: the on-platform title. Under 70 characters, a scroll-stopping hook that matches what is actually said
+  in the video, with 1 or 2 fitting emojis. No clickbait the video doesn't deliver.
+- description: 1-3 short, casual sentences that tease the video and invite a comment or follow, with 2-3 emojis
+  placed naturally. Same language as the video.
+- hashtags: 3-6 relevant hashtags (include #shorts).
+- best_time: the best day of the week and a time window to upload (write it like "7 to 9 PM"), in the creator's
+  own time zone (given), for this video's likely audience and topic. reason: one plain sentence explaining why.
+Writing rules for caption and description: NEVER use dashes of any kind (no "-", "–" or "—" between words or
+phrases). No semicolons, no fancy quotes, no "Ever wondered", "Get ready", "You won't believe", "Dive into" or other
+AI-sounding phrases. Use commas, periods, "..." or emojis instead."""
+
+
+COPY_VERSION = 2   # bump when the prompt changes, so cached copy is rewritten
+
+
+def _human(text) -> str:
+    """Strip the dashes and curly quotes that make copy look AI-written."""
+    t = str(text or "").strip()
+    t = re.sub(r"\s*[—–]\s*|\s+-\s+|\s*--\s*", ", ", t)   # word - word / word—word -> comma
+    t = t.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    t = re.sub(r",\s*(?=[,.!?])", "", t)   # no comma right before other punctuation
+    return re.sub(r"\s{2,}", " ", t).strip(" ,")
+
+
+def social_copy(transcript: str, title: str, instructions: str, tz: str, claude: dict | None) -> dict:
+    """Best caption, description, hashtags and upload time for a finished short."""
+    client = make_client(claude)
+    user = (f"Video file name: {title or '(unknown)'}\n"
+            f"Creator's editing instructions: {instructions or '(none)'}\n"
+            f"Creator's time zone: {tz or 'unknown (use UTC)'}\n\n"
+            f"Transcript:\n{transcript.strip() or '(no speech - judge from the file name and instructions)'}")
+    resp = client.messages.create(model=_model(claude), max_tokens=2000, system=COPY_SYSTEM,
+                                  messages=[{"role": "user", "content": user}])
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("the AI declined to write copy for this video")
+    data = _parse_json(next((b.text for b in resp.content if b.type == "text"), ""))
+    bt = data.get("best_time") or {}
+    tags = [str(t).strip() for t in data.get("hashtags") or [] if str(t).strip()]
+    return {"caption": _human(data.get("caption")), "description": _human(data.get("description")),
+            "hashtags": [t if t.startswith("#") else "#" + t for t in tags][:8],
+            "best_time": {k: _human(bt.get(k)) if k == "reason" else str(bt.get(k) or "").strip()
+                          for k in ("day", "time", "reason")}, "v": COPY_VERSION}
