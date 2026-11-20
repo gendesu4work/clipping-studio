@@ -115,15 +115,39 @@ def transcribe(src, job: Job, settings: Settings, dur: float):
     job.stage("Transcribing", 0)
     job.log(f"Loading speech model '{settings.whisper_model}'...")
     model = WhisperModel(settings.whisper_model, device="cpu", compute_type="int8")
-    segs, info = model.transcribe(src, word_timestamps=True, vad_filter=False, beam_size=5)
-    words = []
-    for seg in segs:
-        for w in seg.words or []:
-            t = w.word.strip()
-            if t: words.append(Word(t, float(w.start), float(w.end)))
-        job.stage("Transcribing", min(1.0, seg.end / max(dur, 1e-3)))
+    # VAD skips silence/music, which is where Whisper emits text-less segments
+    try:
+        words, info = _transcribe_words(model, src, job, dur, word_timestamps=True)
+    except (ValueError, IndexError) as e:
+        # faster-whisper's word alignment crashes on a segment with no text tokens
+        # ("boolean index did not match..."); retry with segment-level timing instead
+        job.log(f"Word timing failed ({e}); retrying with estimated word times.")
+        words, info = _transcribe_words(model, src, job, dur, word_timestamps=False)
     job.log(f"Transcribed {len(words)} words (language: {info.language}).")
     return words
+
+
+def _transcribe_words(model, src, job: Job, dur: float, word_timestamps: bool):
+    segs, info = model.transcribe(src, word_timestamps=word_timestamps, vad_filter=True, beam_size=5)
+    words = []
+    for seg in segs:
+        if word_timestamps:
+            for w in seg.words or []:
+                t = w.word.strip()
+                if t: words.append(Word(t, float(w.start), float(w.end)))
+        else:
+            # spread the segment's words over its span, weighted by length
+            toks = seg.text.split()
+            if toks:
+                a, b = float(seg.start), float(seg.end)
+                total = sum(len(t) for t in toks) or 1
+                t0 = a
+                for t in toks:
+                    t1 = t0 + (b - a) * len(t) / total
+                    words.append(Word(t, t0, t1))
+                    t0 = t1
+        job.stage("Transcribing", min(1.0, seg.end / max(dur, 1e-3)))
+    return words, info
 
 
 # ---------------------------------------------------------------- 2. cut list
