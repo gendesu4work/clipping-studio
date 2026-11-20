@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const path = require("path");
 
 // Dev (npm start): run the Python code in this repo.
@@ -70,8 +71,20 @@ function probePython(cmd, args) {
 // Finds a Python 3.10+ to build the environment with, preferring a supported 64-bit version.
 // Returns { cmd, args, version, supported } or null.
 function findSystemPython() {
+  // Standard python.org install folders, so Python is found even when "Add to PATH" wasn't ticked
+  // (or PATH hasn't refreshed yet right after we installed it ourselves).
+  const dirs = [
+    path.join(process.env.LOCALAPPDATA || "", "Programs", "Python"),
+    process.env.ProgramFiles || "C:\\Program Files",
+  ];
+  const known = [];
+  for (const m of SUPPORTED_MINORS) for (const d of dirs) {
+    const exe = path.join(d, `Python3${m}`, "python.exe");
+    if (fs.existsSync(exe)) known.push([exe, []]);
+  }
   const candidates = [
     ...SUPPORTED_MINORS.map(m => ["py", [`-3.${m}`]]), // Python launcher: pick a specific version if installed
+    ...known,
     ["py", ["-3"]], ["python", []], ["python3", []],
   ];
   let fallback = null;
@@ -116,6 +129,47 @@ function run(cmd, args) {
 }
 
 const PYTHON_URL = "https://www.python.org/downloads/release/python-3146/"; // a known-good version
+const PYTHON_INSTALLER_URL = "https://www.python.org/ftp/python/3.14.6/python-3.14.6-amd64.exe";
+
+function download(url, dest, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    https.get(url, res => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
+        res.resume();
+        // (the global URL class is shadowed by the server URL constant above)
+        return resolve(download(new (require("url").URL)(res.headers.location, url).toString(), dest, redirects - 1));
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      const out = fs.createWriteStream(dest);
+      res.pipe(out);
+      out.on("finish", () => out.close(() => resolve()));
+      out.on("error", reject);
+      res.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+// Downloads the official 64-bit Python installer and installs it silently for this user only
+// (no admin prompt), with PATH and the py launcher. Returns true if it finished.
+async function installPython() {
+  const dest = path.join(app.getPath("temp"), "creator-studio-python-installer.exe");
+  try {
+    if (win) await win.loadURL(splashHtml("First-time setup: downloading Python 3.14…"));
+    log(`setup: downloading ${PYTHON_INSTALLER_URL}`);
+    await download(PYTHON_INSTALLER_URL, dest);
+    if (fs.statSync(dest).size < 5_000_000) throw new Error("download looks incomplete");
+    if (win) await win.loadURL(splashHtml("First-time setup: installing Python 3.14 (about a minute)…"));
+    const ok = await run(dest, ["/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1",
+      "InstallLauncherAllUsers=0", "Include_test=0", "Include_doc=0", "Shortcuts=0"]);
+    log(`setup: Python installer ${ok ? "finished" : "returned an error"}`);
+    return ok;
+  } catch (e) {
+    log(`setup: Python install failed: ${e}`);
+    return false;
+  } finally {
+    try { fs.unlinkSync(dest); } catch {}
+  }
+}
 
 function showSetupError(message, detail, offerPython) {
   const buttons = offerPython ? ["Get Python 3.14", "Open log folder", "Close"] : ["Open log folder", "Close"];
@@ -133,11 +187,34 @@ async function ensureVenv() {
   const venvPy = path.join(venvDir, "Scripts", "python.exe");
   const ready = path.join(venvDir, ".ready");
   if (fs.existsSync(ready)) return true;
-  const py = findSystemPython();
-  if (!py) {
-    showSetupError("Creator Studio needs Python (3.14 recommended).",
-      "Install 64-bit Python 3.14 from python.org (tick \"Add python.exe to PATH\"), then open Creator Studio again.", true);
-    return false;
+  let py = findSystemPython();
+  if (!py || !py.supported) {
+    // No usable Python: offer to install it for them instead of sending them to python.org.
+    const why = py ? `You have Python ${py.version} (or 32-bit Python), which some packages don't support yet.`
+                   : "Python wasn't found on this PC.";
+    const buttons = ["Install Python for me", py ? "Try with my Python" : "Get Python manually", "Close"];
+    const r = dialog.showMessageBoxSync({
+      type: "question", title: "Creator Studio", buttons, defaultId: 0, cancelId: 2, noLink: true,
+      message: "Creator Studio needs Python 3.14.",
+      detail: `${why}\n\nCreator Studio can download the official 64-bit Python 3.14 from python.org and install it ` +
+              "for your account only (about 30 MB, no admin needed).",
+    });
+    if (r === 0) {
+      await installPython();
+      const fresh = findSystemPython();
+      if (fresh && fresh.supported) py = fresh;
+      else if (!py) {
+        showSetupError("Python couldn't be installed automatically.",
+          "Install 64-bit Python 3.14 from python.org (tick \"Add python.exe to PATH\"), then open Creator Studio again.\n\n" +
+          `Last lines of studio.log:\n${logTail() || "(empty)"}`, true);
+        return false;
+      }
+    } else if (r === 1 && !py) {
+      shell.openExternal(PYTHON_URL);
+      return false;
+    } else if (r !== 1) {
+      return false;
+    }
   }
   log(`setup: using Python ${py.version} (${py.cmd} ${py.args.join(" ")})${py.supported ? "" : " - not a tested version"}`);
 
