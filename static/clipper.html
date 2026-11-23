@@ -245,6 +245,14 @@ function videoId(url) {
   const m = url.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/);
   return m ? m[1] : null;
 }
+// YouTube refuses to play some videos outside youtube.com (owner or copyright settings). Its error card looks
+// like the app is broken, so hide the player and say the download still works.
+function ytBlocked() {
+  const f = document.querySelector(".player iframe, #player");
+  if (f) f.style.display = "none";
+  player = null;
+  showMsg("YouTube doesn't allow this video to play inside other apps, so there's no preview. You can still type start and end times and download.", "");
+}
 function showMsg(text, kind) { const m = $("msg"); m.textContent = text; m.className = kind || ""; }
 function updateLength() {
   const a = toSec($("start").value), b = toSec($("end").value);
@@ -274,7 +282,7 @@ async function loadVideo() {
       const id = d.id || videoId(url);
       if (window.YT && YT.Player) {
         if (ytPlayer) ytPlayer.loadVideoById(id);
-        else ytPlayer = new YT.Player("player", { videoId: id, playerVars: { rel: 0 } });
+        else ytPlayer = new YT.Player("player", { videoId: id, playerVars: { rel: 0 }, events: { onError: ytBlocked } });
       }
       player = ytPlayer;
     } else {

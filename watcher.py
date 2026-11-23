@@ -119,7 +119,7 @@ def _snap(ranges, words, dur):
 
 def watch_plan(src, workdir, words, instructions, dur, job):
     """Upload the clip to Gemini and get back a time-based Plan plus format settings."""
-    from clipper import gemini_client, model_order, gemini_error, save_settings, load_key
+    from clipper import gemini_client, model_order, gemini_error, save_settings, load_key, is_pro_paid_only
     from director import _transcript_text
     from google.genai import types
 
@@ -155,11 +155,12 @@ def watch_plan(src, workdir, words, instructions, dur, job):
             except Exception as e:
                 last = gemini_error(e, model)
                 quota = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-                if quota and "-pro" in model and "limit: 0" in str(e):
+                paid_only = is_pro_paid_only(e, model)
+                if paid_only:
                     save_settings(pro_blocked_key=load_key()[-6:])
-                if not (quota or "overloaded" in last) or i == len(models) - 1:
+                if not (quota or paid_only or "overloaded" in last) or i == len(models) - 1:
                     raise RuntimeError(last) from e
-                job.log(f"  {model} {'has no free quota left' if quota else 'is busy'}; trying a backup model.")
+                job.log(f"  {model} {'needs billing' if paid_only else 'has no free quota left' if quota else 'is busy'}; trying a backup model.")
         else:
             raise RuntimeError(last or "No Gemini model available.")
     finally:

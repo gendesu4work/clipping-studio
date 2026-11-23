@@ -202,6 +202,19 @@ def pro_blocked() -> bool:
     return settings().get("pro_blocked_key") == load_key()[-6:]
 
 
+def is_no_free_tier(e: Exception) -> bool:
+    """Google refused because this key's project has no free tier (403, needs billing)."""
+    msg = str(e)
+    return ("403" in msg or "PERMISSION_DENIED" in msg) and ("free tier" in msg or "billing" in msg)
+
+
+def is_pro_paid_only(e: Exception, model: str) -> bool:
+    """Pro refused for a free-tier key: 429 with 'limit: 0', or 403 'free tier not available'."""
+    msg = str(e)
+    quota0 = ("429" in msg or "RESOURCE_EXHAUSTED" in msg) and "limit: 0" in msg
+    return "-pro" in model and (quota0 or is_no_free_tier(e))
+
+
 def retired_models() -> set[str]:
     """Models Google listed but then refused with 404 (e.g. 'no longer available to new users')."""
     return set(settings().get("retired_models") or [])
@@ -264,6 +277,9 @@ def gemini_error(e: Exception, model: str = "") -> str:
                 "To remove the limit, turn on billing for your API key at aistudio.google.com.")
     if any(s in msg for s in ("503", "UNAVAILABLE", "high demand", "504", "DEADLINE", "timed out", "ReadTimeout")):
         return f"Gemini ({model or 'the model'}) is overloaded right now. Wait a minute and try again."
+    if is_no_free_tier(e):
+        return (f"Google doesn't offer {model or 'Gemini'} for free on this API key's project. "
+                "Turn on billing at aistudio.google.com/billing, or make a new key at aistudio.google.com/apikey.")
     if "API key not valid" in msg or "PERMISSION_DENIED" in msg:
         return "Gemini rejected the API key. Paste a new key in the Gemini box."
     return msg[:400]
@@ -468,16 +484,17 @@ def moments():
                     quota = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
                     busy = "overloaded" in last
                     retired = is_retired_error(e, model)
-                    if quota and "-pro" in model and "limit: 0" in str(e):
+                    paid_only = is_pro_paid_only(e, model)
+                    if paid_only:
                         save_settings(pro_blocked_key=load_key()[-6:])  # free-tier key: Pro never available
                     if retired:
                         retire_model(model)  # Google listed it but refuses it: never pick it again
                         last = f"{model} is no longer available to this API key."
-                    if not (quota or busy or retired):
+                    if not (quota or busy or retired or paid_only):
                         raise RuntimeError(last) from e
                     if busy:
                         busy_models.append(model)
-                    print(f"Gemini {model}: {'no quota left' if quota else 'overloaded' if busy else 'retired'}, trying next")
+                    print(f"Gemini {model}: {'needs billing' if paid_only else 'no quota left' if quota else 'overloaded' if busy else 'retired'}, trying next")
             if not busy_models or round_no == 1:
                 break
             todo = busy_models
@@ -588,7 +605,7 @@ def twitch_download():
         files = [p for p in workdir.iterdir() if p.is_file() and p.stat().st_size > 0 and ".part" not in p.name]
         if not files:
             raise RuntimeError("The download produced no file.")
-        out = max(files, key=lambda p: p.stat().st_size)
+        out = ensure_h264(max(files, key=lambda p: p.stat().st_size))
         title = data.get("title") or twitch_id(url)
         channel = data.get("channel") or data.get("creator") or data.get("uploader") or ""   # the streamer, not who clipped it
         from forge_routes import save_to_library
@@ -644,6 +661,8 @@ def clip():
             # Reliable path: download the whole video once (cached), then cut locally.
             src, _ = full_download(url, quality)
             out = cut_local(src, start, end, audio_only, workdir)
+        if not audio_only:
+            out = ensure_h264(out)
         payload = io.BytesIO(out.read_bytes())
         name = f"{safe_name(meta['title'])} [{fmt(start)}-{fmt(end)}]{out.suffix}"
         lib_name = None
@@ -717,6 +736,34 @@ def video_encoder() -> list[str]:
         except Exception:
             pass
     return _encoder
+
+
+def ensure_h264(path: Path) -> Path:
+    """Twitch (and some fallbacks) hand back HEVC/H.265, which the app's built-in player can't show on most
+    PCs (sound plays over a black picture). Re-encode any non-H.264 video to H.264; audio is kept as is."""
+    if path.suffix.lower() != ".mp4":
+        return path
+    ensure_ffmpeg()
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
+                            "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=30)
+        codec = r.stdout.strip()
+    except Exception:
+        return path
+    if not codec or codec == "h264":
+        return path
+    out = path.with_name(path.stem + "_h264.mp4")
+    x264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    for enc in [video_encoder()] + ([x264] if video_encoder() != x264 else []):
+        r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:v:0",
+                            "-map", "0:a:0?", *enc, "-maxrate", "10M", "-bufsize", "20M",  # keep files near the source size
+                            "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart",
+                            str(out)], capture_output=True, text=True, timeout=900)
+        if r.returncode == 0 and out.exists() and out.stat().st_size > 1000:
+            path.unlink(missing_ok=True)
+            return out.replace(path)
+        print(f"Converting {codec} to H.264 failed:", r.stderr[-300:])
+    return path
 
 
 def _fetch(f: dict, a: int, b: int) -> bytes:

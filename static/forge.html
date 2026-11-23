@@ -316,12 +316,23 @@ function onLayout() {
 
 async function initSplit() {
   split.loadedFor = job;
-  $("#scrub").value = 250; loadFrame();
+  $("#scrub").value = 250; loadFrame(true);
   await autoDetect();
 }
-function loadFrame() {
+async function loadFrame(first) {
   const t = (+$("#scrub").value / 1000) * (srcDur || 0);
-  $("#stageImg").src = `/api/forge/frame/${job}?t=${t.toFixed(2)}&_=${Date.now()}`;
+  const url = `/api/forge/frame/${job}?t=${t.toFixed(2)}&_=${Date.now()}`;
+  if (!first) { $("#stageImg").src = url; return; }
+  // first look: the server skips black stretches (cutscenes, loading screens) and says which time it used
+  try {
+    const r = await fetch(url + "&avoid_black=1");
+    if (!r.ok) throw 0;
+    const used = parseFloat(r.headers.get("X-Frame-Time"));
+    if (srcDur && !isNaN(used)) $("#scrub").value = Math.round(used / srcDur * 1000);
+    const old = $("#stageImg").src;
+    $("#stageImg").src = URL.createObjectURL(await r.blob());
+    if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+  } catch { $("#stageImg").src = url; }
 }
 $("#stageImg").addEventListener("load", e => { split.W = e.target.naturalWidth; split.H = e.target.naturalHeight; layoutBoxes(); });
 $("#scrub").addEventListener("input", () => { clearTimeout(split._t); split._t = setTimeout(loadFrame, 120); });

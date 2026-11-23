@@ -393,14 +393,33 @@ def frame(jid):
     job_dir(jid)
     st = state.get(jid) or abort(404)
     cap = cv2.VideoCapture(st["video"])
-    t = float(request.args.get("t", 0) or 0)
-    cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t) * 1000)
-    ok, f = cap.read(); cap.release()
-    if not ok: abort(404)
+    t = max(0.0, float(request.args.get("t", 0) or 0))
+
+    def grab(sec):
+        cap.set(cv2.CAP_PROP_POS_MSEC, sec * 1000)
+        ok, img = cap.read()
+        return img if ok else None
+
+    def mostly_black(img):
+        # a facecam over a black cutscene/loading screen still counts as black
+        g = cv2.cvtColor(cv2.resize(img, (64, 36)), cv2.COLOR_BGR2GRAY)
+        return (g < 24).mean() > 0.6
+
+    f = grab(t)
+    if request.args.get("avoid_black") and (f is None or mostly_black(f)):
+        # first look at the clip: try other spots so the box editor doesn't open on a black frame
+        dur = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / (cap.get(cv2.CAP_PROP_FPS) or 30)
+        for frac in (0.1, 0.4, 0.5, 0.6, 0.75, 0.05, 0.9):
+            g = grab(frac * dur) if dur else None
+            if g is not None and not mostly_black(g):
+                f, t = g, frac * dur
+                break
+    cap.release()
+    if f is None: abort(404)
     if f.shape[1] > 1280:
         f = cv2.resize(f, (1280, int(f.shape[0] * 1280 / f.shape[1])), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return buf.tobytes(), 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store"}
+    return buf.tobytes(), 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store", "X-Frame-Time": f"{t:.2f}"}
 
 
 @bp.get("/api/forge/autobox/<jid>")
