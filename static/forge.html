@@ -105,10 +105,40 @@ textarea:focus{border-color:#4a5060}
 .fontrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .fontrow select{flex:1;min-width:160px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:8px 10px;font:inherit;font-size:14px}
 .fontrow .ghost{font-size:13px;padding:7px 12px}
-#fontPreview{margin-top:10px;background:#111;border-radius:10px;padding:14px;text-align:center;color:#fff;font-size:26px;line-height:1.2;
-  text-transform:uppercase;letter-spacing:.04em;text-shadow:0 2px 4px #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-#fontPreview b{color:#ffe600;font-weight:inherit;text-shadow:0 0 12px #ffe600aa}
-#fontMsg{font-size:12.5px;color:var(--dim);margin-top:6px;min-height:1em}
+#fontMsg{font-size:12.5px;color:var(--dim);min-height:0}
+#fontMsg:not(:empty){margin:4px 0 6px}
+/* captions card */
+.cap-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+#capCard.off #capBody{opacity:.35;pointer-events:none}
+.cap-stage{position:relative;height:210px;border-radius:12px;overflow:hidden;margin-bottom:14px;
+  background:radial-gradient(120% 90% at 30% 20%,#4b6a86 0%,#2a3a4c 55%,#161c24 100%);display:grid;place-items:center}
+.cap-page{position:absolute;left:0;right:0;text-align:center;line-height:1.12;padding:0 7%}
+.cap-page .w{display:inline-block;position:relative;white-space:pre;paint-order:stroke fill}
+.capgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:8px;margin:12px 0 6px}
+.ctile{background:#121418;border:1px solid var(--line);border-radius:10px;padding:0;display:flex;flex-direction:column;align-items:center;
+  color:var(--dim);font-size:11.5px;overflow:hidden}
+.ctile .tv{height:50px;width:100%;display:grid;place-items:center;font-size:17px;line-height:1;white-space:nowrap;overflow:hidden;padding:0 4px}
+.ctile .tv .w{display:inline-block;paint-order:stroke fill}
+.ctile .tn{padding:3px 0 6px}
+.ctile:hover{border-color:#454b57}
+.ctile.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;color:var(--text)}
+.csec{font-size:12px;color:var(--dim);margin:14px 0 2px;text-transform:uppercase;letter-spacing:.1em}
+.crow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
+.crow>span small{color:var(--dim);font-size:12px}
+.crow .fontrow{flex:1;justify-content:flex-end;max-width:420px}
+.cctl{display:flex;align-items:center;gap:12px}
+.cctl input[type=range]{accent-color:var(--accent);width:150px}
+.num{font-weight:500;font-size:13px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 10px;min-width:64px;text-align:center}
+.cseg{width:auto} .cseg button{padding:5px 11px;flex:none}
+.swatch{width:44px;height:28px;border:1px solid var(--line);border-radius:8px;background:none;padding:0;cursor:pointer}
+.swatch::-webkit-color-swatch-wrapper{padding:2px} .swatch::-webkit-color-swatch{border:0;border-radius:6px}
+@keyframes cpop{0%{transform:scale(.6)}55%{transform:scale(1.12)}100%{transform:scale(1)}}
+@keyframes cbounce{0%{transform:translateY(-.35em) scaleY(1.2);opacity:0}25%{opacity:1}60%{transform:translateY(0) scaleY(.88)}100%{transform:none}}
+@keyframes crise{0%{transform:translateY(.45em);opacity:0}80%{opacity:1}100%{transform:none}}
+@keyframes cblur{0%{filter:blur(.35em);opacity:0}100%{filter:none;opacity:1}}
+@keyframes cfade{0%{opacity:0;color:#c8c8c8}30%{opacity:.67;color:#c8c8c8}}
+@keyframes cfadein{0%{opacity:0}}
+@keyframes ctype{0%{clip-path:inset(0 100% 0 0)}100%{clip-path:inset(0 0 0 0)}}
 .lib{margin-top:18px}
 .lib-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .lib-head h2{margin:0}
@@ -206,19 +236,46 @@ dialog .keymsg.err{color:var(--red)} dialog .keymsg.ok{color:var(--green)}
           <div class="seg" data-k="aspect"><button data-v="9:16" class="on">9:16</button><button data-v="4:5">4:5</button><button data-v="3:4">3:4</button><button data-v="1:1">1:1</button></div></div>
         <div class="opt"><label class="t">Pace (pause cutting)</label>
           <div class="seg" data-k="pace"><button data-v="relaxed">Relaxed</button><button data-v="normal" class="on">Normal</button><button data-v="tight">Tight</button></div></div>
-        <div class="opt"><label class="t">Captions</label>
-          <div class="seg" data-k="caption_position"><button data-v="off">Off</button><button data-v="top">Top</button><button data-v="middle" class="on">Middle</button><button data-v="bottom">Bottom</button></div></div>
-        <div class="opt" style="grid-column:1/-1"><label class="t">Caption font <span style="opacity:.7">(captions + hook title)</span></label>
-          <div class="fontrow"><select id="fontSel"></select>
-            <button class="ghost" id="fontAdd" title="Add a .ttf or .otf font">+ Add font</button>
-            <button class="ghost hidden" id="fontDel" title="Remove this added font">Remove</button></div>
-          <input type="file" id="fontFile" accept=".ttf,.otf" multiple hidden>
-          <div id="fontPreview">This is <b>how</b> it looks</div><div id="fontMsg"></div></div>
         <div class="opt"><label class="t">Look</label>
           <label class="tog"><input type="checkbox" id="vignette" checked><span class="sw"></span>Vignette</label></div>
         <div class="opt" style="grid-column:1/-1"><label class="t">Background music <span style="opacity:.7">(optional, auto-ducked under the voice)</span></label>
           <div id="musicBox"><span id="musicName">Drop an mp3 / wav here, or click</span><span id="musicClear" class="hidden">✕</span></div>
           <input type="file" id="musicFile" accept="audio/*" hidden></div>
+      </div>
+    </div>
+
+    <div class="card" id="capCard">
+      <div class="cap-head"><h2 style="margin:0">Captions</h2>
+        <label class="tog"><span>Show captions</span><input type="checkbox" id="capOn" checked><span class="sw"></span></label></div>
+      <div id="capBody">
+        <div class="cap-stage" id="capStage"><div class="cap-page" id="capPage"></div></div>
+        <div class="crow"><span>Position</span>
+          <div class="seg" data-k="caption_position" style="width:240px"><button data-v="top">Top</button><button data-v="middle" class="on">Middle</button><button data-v="bottom">Bottom</button></div></div>
+        <div class="capgrid" id="capGrid"></div>
+        <div class="csec">Text</div>
+        <div class="crow"><span>Font</span>
+          <div class="fontrow"><select id="fontSel"></select>
+            <button class="ghost" id="fontAdd" title="Add a .ttf or .otf font">+ Add font</button>
+            <button class="ghost hidden" id="fontDel" title="Remove this added font">Remove</button></div></div>
+        <input type="file" id="fontFile" accept=".ttf,.otf" multiple hidden>
+        <div id="fontMsg"></div>
+        <div class="crow"><span>Size</span>
+          <div class="cctl"><b class="num" id="sizeVal">100 %</b><input type="range" id="capSize" min="50" max="180" step="5" value="100"></div></div>
+        <div class="crow"><span>Letters</span>
+          <div class="seg cseg" data-c="case"><button data-v="" class="on">Style</button><button data-v="upper">ABC</button><button data-v="lower">abc</button><button data-v="title">Abc</button></div></div>
+        <div class="crow"><span>Words at a time</span>
+          <div class="seg cseg" data-c="wpp"><button data-v="" class="on">Style</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button></div></div>
+        <div class="crow"><span>Punctuation</span>
+          <label class="tog"><input type="checkbox" id="capPunct" checked><span class="sw"></span></label></div>
+        <div class="csec">Colour</div>
+        <div class="crow"><span>Text</span><input type="color" class="swatch" data-c="text"></div>
+        <div class="crow"><span>Highlight <small id="hiNote"></small></span><input type="color" class="swatch" data-c="hi"></div>
+        <div class="crow"><span>Outline</span>
+          <div class="cctl"><label class="tog"><input type="checkbox" id="capOutline"><span class="sw"></span></label>
+            <b class="num" id="outlineVal">auto</b><input type="range" id="capOutlinePx" min="1" max="24" step="1" value="6"></div></div>
+        <div class="crow"><span>Outline colour</span><input type="color" class="swatch" data-c="outline_color"></div>
+        <div class="crow" style="border:0"><span style="color:var(--dim);font-size:12.5px">Your caption setup is remembered for the next clip.</span>
+          <button class="ghost" id="capReset" style="font-size:12.5px;padding:5px 12px">Reset to style</button></div>
       </div>
     </div>
 
@@ -574,37 +631,208 @@ $("#musicClear").addEventListener("click", () => {
   $("#musicName").textContent = "Drop an mp3 / wav here, or click"; $("#musicClear").classList.add("hidden");
 });
 
-// ---------- caption fonts ----------
-let fonts = [];
+// ---------- captions: styles, tweaks, live preview ----------
+let fonts = [], styles = [];
 const loadedFaces = {};
-function savedFont() { try { return localStorage.getItem("forge.font"); } catch { return null; } }
+// cap.custom only holds what the creator changed on top of the chosen style
+const cap = (() => {
+  try { const c = JSON.parse(localStorage.getItem("forge.captions")); if (c && c.style) return Object.assign({on: true, position: "middle", custom: {}}, c); } catch {}
+  let old = null; try { old = localStorage.getItem("forge.font"); } catch {}   // font picked before caption styles existed
+  return {style: "classic", on: true, position: "middle", custom: old && old !== "arialbd.ttf" ? {font: old} : {}};
+})();
+const saveCap = () => { try { localStorage.setItem("forge.captions", JSON.stringify(cap)); } catch {} };
+const styleById = id => styles.find(s => s.id === id) || styles[0];
+const esc = t => String(t).replace(/[<&"]/g, c => ({"<": "&lt;", "&": "&amp;", '"': "&quot;"})[c]);
+
+function look() {   // mirrors caption_styles.look() on the server
+  const st = styleById(cap.style), c = cap.custom, lk = Object.assign({}, st);
+  if (c.font && fonts.some(f => f.id === c.font)) lk.font = c.font;
+  else if (!fonts.some(f => f.id === lk.font)) lk.font = "arialbd.ttf";
+  if (c.size) lk.size *= c.size / 100;
+  if (c.case) lk.case = c.case;
+  lk.wpp = c.wpp || lk.wpp || 6;
+  if (typeof c.punct === "boolean") lk.punct = c.punct;
+  if (c.text) lk.text = c.text;
+  if (c.hi) { lk.hi = c.hi; lk.ai_colors = false; if (lk.box === "word") lk.box_color = c.hi; else if (lk.hi_mode === "none") lk.hi_mode = "keyword"; }
+  if (c.outline === false) lk.outline = 0;
+  else if (c.outline === true) { if (c.outline_px != null) lk.outline_px = c.outline_px; if (!lk.outline) lk.outline = 0.06; lk.outline_alpha = 0; }
+  if (c.outline_color) lk.outline_color = c.outline_color;
+  return lk;
+}
+async function face(id) {
+  const fam = "cf_" + id.replace(/[^\w]/g, "_");
+  if (!loadedFaces[fam]) {
+    loadedFaces[fam] = new FontFace(fam, `url(/api/fonts/file/${encodeURIComponent(id)})`).load()
+      .then(f => { document.fonts.add(f); }).catch(() => {});
+  }
+  await loadedFaces[fam];
+  return fam;
+}
+const fontMeta = id => fonts.find(f => f.id === id) || {};
+function applyCase(t, c) { return c === "upper" ? t.toUpperCase() : c === "lower" ? t.toLowerCase() : c === "title" ? t[0].toUpperCase() + t.slice(1).toLowerCase() : t; }
+const shadowCss = (lk, col, em, on_box) => {   // outline, glow, echo and drop shadow as CSS
+  const sh = [];
+  const glow = lk.glow === "all" || (lk.glow === "hi" && col !== lk.text);
+  if (glow && !on_box) { const g = lk.glow_color || col; sh.push(`0 0 ${.18 * lk.glow_size * em}px ${g}`, `0 0 ${.42 * lk.glow_size * em}px ${g}`); }
+  (lk.echo || []).forEach(([dx, dy, c]) => sh.push(`${dx * em}px ${dy * em}px 0 ${c}`));
+  if (lk.shadow && !on_box) sh.push(`${lk.shadow * em}px ${lk.shadow * em}px ${lk.shadow * em}px #00000080`);
+  return sh.join(",") || "none";
+};
+function wordCss(lk, col, em, scale, on_box) {
+  const fm = fontMeta(lk.font);
+  const bord = on_box ? 0 : lk.outline ? (lk.outline_px != null ? lk.outline_px * scale : lk.outline * em) : 0;
+  const oc = lk.outline_color + (lk.outline_alpha ? Math.round(255 - lk.outline_alpha).toString(16).padStart(2, "0") : "");
+  let css = `color:${on_box && lk.box_text ? lk.box_text : col};font-weight:${fm.bold ? 700 : 400};font-style:${fm.italic ? "italic" : "normal"};` +
+    `letter-spacing:${lk.spacing}em;-webkit-text-stroke:${bord * 2}px ${oc};text-shadow:${shadowCss(lk, col, em, on_box)};`;
+  if (on_box) css += `background:${lk.box_color};border-radius:${lk.radius * 1.2}em;padding:${lk.box_pad * .25}em ${lk.box_pad}em;margin:0 -${lk.box_pad}em;`;
+  return css;
+}
+
+// style tiles
+async function drawTiles() {
+  const grid = $("#capGrid");
+  grid.innerHTML = styles.map(st => `<button class="ctile${st.id === cap.style ? " on" : ""}" data-id="${st.id}"><span class="tv"></span><span class="tn">${esc(st.name)}</span></button>`).join("");
+  for (const st of styles) {
+    const tv = grid.querySelector(`[data-id="${st.id}"] .tv`);
+    const lk = Object.assign({}, st, fonts.some(f => f.id === st.font) ? {} : {font: "arialbd.ttf"});
+    tv.style.fontFamily = `"${await face(lk.font)}", sans-serif`;
+    const em = st.sample.length > 8 ? 14 : 17, ws = st.sample.split(" ");
+    tv.style.fontSize = em + "px";
+    tv.innerHTML = ws.map((w, k) => {
+      const last = k === ws.length - 1;
+      const box = st.box === "word" && last;
+      const col = last && ws.length > 1 && st.hi_mode !== "none" ? st.hi : st.text;
+      return `<span class="w" style="${wordCss(lk, col, em, 17 / 61, box)}">${esc(w)}</span>`;
+    }).join(st.box === "word" ? `<span style="display:inline-block;width:${st.box_pad + .25}em"></span>` : " ");
+    tv.innerHTML = st.box === "line"
+      ? `<span style="background:${st.box_color}${(255 - st.box_alpha).toString(16).padStart(2, "0")};padding:.15em .35em;border-radius:.3em">${tv.innerHTML}</span>`
+      : `<span>${tv.innerHTML}</span>`;
+  }
+}
+$("#capGrid").addEventListener("click", e => {
+  const b = e.target.closest(".ctile"); if (!b) return;
+  cap.style = b.dataset.id;
+  // a new style brings its own colours and outline; layout tweaks (font, size, letters, words) stay
+  ["text", "hi", "outline", "outline_px", "outline_color"].forEach(k => delete cap.custom[k]);
+  document.querySelectorAll(".ctile").forEach(x => x.classList.toggle("on", x === b));
+  capChanged();
+});
+
+// controls
+function syncControls() {
+  const lk = look(), c = cap.custom;
+  $("#capOn").checked = cap.on; $("#capCard").classList.toggle("off", !cap.on);
+  document.querySelectorAll('.seg[data-k="caption_position"] button').forEach(b => b.classList.toggle("on", b.dataset.v === cap.position));
+  opts.caption_position = cap.position;
+  $("#fontSel").value = c.font && fonts.some(f => f.id === c.font) ? c.font : "";
+  $("#fontDel").classList.toggle("hidden", !fontMeta(c.font).custom);
+  $("#capSize").value = c.size || 100; $("#sizeVal").textContent = (c.size || 100) + " %";
+  document.querySelectorAll(".cseg").forEach(seg => seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === String(c[seg.dataset.c] || ""))));
+  $("#capPunct").checked = lk.punct;
+  document.querySelectorAll(".swatch").forEach(s => s.value = s.dataset.c === "hi" && lk.box === "word" ? lk.box_color : lk[s.dataset.c]);
+  $("#hiNote").textContent = styleById(cap.style).ai_colors && !c.hi ? "· AI picks the colour" : "";
+  $("#capOutline").checked = !!lk.outline;
+  $("#capOutlinePx").disabled = !lk.outline;
+  $("#capOutlinePx").value = c.outline_px != null ? c.outline_px : Math.round((lk.outline || 0.06) * 61);
+  $("#outlineVal").textContent = !lk.outline ? "off" : c.outline_px != null ? c.outline_px + " px" : "auto";
+}
+function capChanged() { saveCap(); syncControls(); restartPreview(); }
+$("#capOn").addEventListener("change", e => { cap.on = e.target.checked; capChanged(); });
+document.querySelector('.seg[data-k="caption_position"]').addEventListener("click", e => {
+  const b = e.target.closest("button"); if (b) { cap.position = b.dataset.v; capChanged(); }
+});
+document.querySelectorAll(".cseg").forEach(seg => seg.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.v) cap.custom[seg.dataset.c] = seg.dataset.c === "wpp" ? +b.dataset.v : b.dataset.v; else delete cap.custom[seg.dataset.c];
+  capChanged();
+}));
+$("#capSize").addEventListener("input", e => { const v = +e.target.value; if (v === 100) delete cap.custom.size; else cap.custom.size = v; capChanged(); });
+$("#capPunct").addEventListener("change", e => { cap.custom.punct = e.target.checked; capChanged(); });
+document.querySelectorAll(".swatch").forEach(s => s.addEventListener("input", () => { cap.custom[s.dataset.c] = s.value; capChanged(); }));
+$("#capOutline").addEventListener("change", e => { cap.custom.outline = e.target.checked; if (!e.target.checked) delete cap.custom.outline_px; capChanged(); });
+$("#capOutlinePx").addEventListener("input", e => { cap.custom.outline = true; cap.custom.outline_px = +e.target.value; capChanged(); });
+$("#capReset").addEventListener("click", () => { cap.custom = {}; capChanged(); });
+
+// live preview: a sample line played word by word in the chosen look
+const SAMPLE = "This is how your captions will look on screen. Pretty clean, right?".split(" ");
+const KEYWORDS = {2: "#ffe600", 6: "#3dff6e", 10: "#ffe600"};
+let pvTimer = null, pvRun = 0;
+async function restartPreview() {
+  clearTimeout(pvTimer);
+  const run = ++pvRun;                    // only the newest preview may keep playing
+  const lk = look(), page = $("#capPage"), stage = $("#capStage");
+  const fam = await face(lk.font);
+  if (run !== pvRun) return;              // a newer pick arrived while this font loaded
+  clearTimeout(pvTimer);
+  page.style.fontFamily = `"${fam}", sans-serif`;
+  const scale = stage.clientWidth / 1080, em = 61 * scale * lk.size * 0.95;
+  page.style.fontSize = em + "px";
+  page.style.top = ""; page.style.transform = "";
+  page.style.top = {top: "22%", middle: "50%", bottom: "78%"}[cap.position];
+  // pages like the server: by words at a time, long gaps and sentence ends
+  const pages = []; let cur = [];
+  SAMPLE.forEach((w, i) => { cur.push(i); if (cur.length >= lk.wpp || (/[.?!]$/.test(w) && (cur.length >= 2 || lk.wpp === 1))) { pages.push(cur); cur = []; } });
+  if (cur.length) pages.push(cur);
+  let p = 0, side = 1;
+  const STEP = 420;
+  const showPage = () => {
+    if (run !== pvRun) return;
+    if (!cap.on) { page.innerHTML = ""; return; }
+    const idx = pages[p % pages.length];
+    const rot = lk.tilt ? `rotate(${lk.tilt * side}deg)` : ""; side = -side;
+    page.style.transform = `translateY(-50%) ${rot}`;
+    const txt = i => {
+      let t = applyCase(SAMPLE[i], lk.case);
+      if (!lk.punct) t = t.replace(/[.,!?;:"]/g, "");
+      return esc(t);
+    };
+    const kw = i => lk.hi_mode === "keyword" && KEYWORDS[i] ? (lk.ai_colors ? KEYWORDS[i] : lk.hi) : null;
+    let k = 0;
+    const tick = () => {
+      if (run !== pvRun) return;
+      const html = idx.map((i, j) => {
+        const base = kw(i) || lk.text;
+        const said = j < k, active = j === k - 1;
+        if (lk.reveal === "word" && !said) return `<span class="w" style="visibility:hidden">${txt(i)}</span>`;
+        let col = !said ? (lk.pre || base) : active && ["active", "spoken"].includes(lk.hi_mode) ? lk.hi
+          : said && lk.hi_mode === "spoken" ? lk.hi : base;
+        const box = active && lk.box === "word";
+        let anim = "";
+        if (active) {
+          const a = lk.reveal === "page" && !["pop", "bounce"].includes(lk.anim) ? "none" : lk.anim;
+          anim = {fade: lk.reveal === "word" ? "cfade .23s" : "", pop: "cpop .17s", bounce: "cbounce .24s", rise: "crise .19s",
+                  blur: "cblur .24s", type: `ctype ${Math.min(.07 * SAMPLE[i].length, .3)}s steps(${SAMPLE[i].length})`}[a] || "";
+        }
+        return `<span class="w" style="${wordCss(lk, col, em, scale, box)}${anim ? `animation:${anim} both;` : ""}">${txt(i)}</span>`;
+      }).join(lk.box === "word" ? `<span style="display:inline-block;width:${lk.box_pad + .25}em"></span>` : " ");
+      page.innerHTML = lk.box === "line"
+        ? `<span style="background:${lk.box_color}${(255 - lk.box_alpha).toString(16).padStart(2, "0")};padding:.12em .3em;border-radius:${lk.radius}em;-webkit-box-decoration-break:clone;box-decoration-break:clone">${html}</span>`
+        : html;
+      if (k < idx.length) { k++; pvTimer = setTimeout(tick, k === 1 && lk.reveal === "page" ? 0 : STEP); }
+      else { p++; pvTimer = setTimeout(showPage, STEP + 250); }
+    };
+    if (lk.reveal === "page") k = 0;
+    tick();
+  };
+  showPage();
+}
+window.addEventListener("resize", () => restartPreview());
+
 async function loadFonts(pick) {
   const r = await fetch("/api/fonts").then(r => r.ok ? r.json() : {error: r.status}).catch(() => ({error: "offline"}));
   if (r.error) $("#fontMsg").textContent = "Couldn't load fonts from Creator Studio. Close it and open it again (it may be running an older version).";
   fonts = r.fonts || [];
-  const want = pick || savedFont();
   const sys = fonts.filter(f => !f.custom), mine = fonts.filter(f => f.custom);
-  const opt = f => `<option value="${f.id.replace(/"/g, "&quot;")}">${f.name.replace(/</g, "&lt;")}</option>`;
-  $("#fontSel").innerHTML = `<optgroup label="Built-in">${sys.map(opt).join("")}</optgroup>` +
+  const opt = f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`;
+  $("#fontSel").innerHTML = `<option value="">Style's own</option><optgroup label="Built-in">${sys.map(opt).join("")}</optgroup>` +
     (mine.length ? `<optgroup label="My fonts">${mine.map(opt).join("")}</optgroup>` : "");
-  if (want && fonts.some(f => f.id === want)) $("#fontSel").value = want;
-  onFont();
+  if (pick) cap.custom.font = pick;
 }
-async function onFont() {
-  const id = $("#fontSel").value, f = fonts.find(x => x.id === id);
-  $("#fontDel").classList.toggle("hidden", !f || !f.custom);
-  try { localStorage.setItem("forge.font", id); } catch {}
-  if (!f) return;
-  const fam = "cf_" + id.replace(/[^\w]/g, "_");
-  if (!loadedFaces[fam]) {
-    try {
-      const face = new FontFace(fam, `url(/api/fonts/file/${encodeURIComponent(id)})`);
-      document.fonts.add(await face.load()); loadedFaces[fam] = true;
-    } catch { $("#fontMsg").textContent = "Couldn't preview this font, but it will still be used."; }
-  }
-  $("#fontPreview").style.fontFamily = `"${fam}", sans-serif`;
-}
-$("#fontSel").addEventListener("change", () => { $("#fontMsg").textContent = ""; onFont(); });
+$("#fontSel").addEventListener("change", e => {
+  $("#fontMsg").textContent = "";
+  if (e.target.value) cap.custom.font = e.target.value; else delete cap.custom.font;
+  capChanged();
+});
 $("#fontAdd").addEventListener("click", () => $("#fontFile").click());
 $("#fontFile").addEventListener("change", async e => {
   let last = null, errs = [];
@@ -619,23 +847,32 @@ $("#fontFile").addEventListener("change", async e => {
   e.target.value = "";
   await loadFonts(last && last.id);
   $("#fontMsg").textContent = errs.join(" · ") || (last ? `Added ${last.name}.` : "");
+  capChanged();
 });
 $("#fontDel").addEventListener("click", async () => {
-  const f = fonts.find(x => x.id === $("#fontSel").value);
-  if (!f || !f.custom || !confirm(`Remove the font "${f.name}"?`)) return;
+  const f = fontMeta(cap.custom.font);
+  if (!f.custom || !confirm(`Remove the font "${f.name}"?`)) return;
   await fetch(`/api/fonts/${encodeURIComponent(f.id)}`, {method: "DELETE"});
   $("#fontMsg").textContent = `Removed ${f.name}.`;
-  await loadFonts(fonts.find(x => !x.custom)?.id);
+  delete cap.custom.font;
+  await loadFonts(); capChanged();
 });
-loadFonts();
+
+(async () => {
+  await loadFonts();
+  const r = await fetch("/api/caption-styles").then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  styles = r.styles || [];
+  if (!styles.length) { $("#capGrid").innerHTML = `<div class="empty" style="grid-column:1/-1">Close Creator Studio and open it again to load caption styles.</div>`; return; }
+  if (!styles.some(s => s.id === cap.style)) cap.style = "classic";
+  syncControls(); restartPreview(); drawTiles();
+})();
 
 // run
 $("#go").addEventListener("click", async () => {
   if (!job) return;
-  const o = {aspect: opts.aspect, pace: opts.pace, captions: opts.caption_position !== "off",
-             caption_position: opts.caption_position === "off" ? "middle" : opts.caption_position,
+  const o = {aspect: opts.aspect, pace: opts.pace, captions: cap.on, caption_position: cap.position,
              vignette: $("#vignette").checked, music: opts.music !== false, layout: opts.layout,
-             caption_font: $("#fontSel").value || undefined,
+             caption_style: cap.style, caption_custom: cap.custom,
              heavy: $("#heavy").checked, focus: moments(),
              title: $("#frameTitle").value.trim(), handle: $("#frameHandle").value.trim()};
   if (opts.layout === "framed") o.aspect = "9:16";

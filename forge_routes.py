@@ -310,6 +310,8 @@ def start():
         captions=bool(o.get("captions", True)),
         caption_position=o.get("caption_position", "middle"),
         caption_font=str(o.get("caption_font") or "arialbd.ttf"),
+        caption_style=str(o.get("caption_style") or "classic"),
+        caption_custom=o.get("caption_custom") if isinstance(o.get("caption_custom"), dict) else {},
         vignette=bool(o.get("vignette", True)),
         music=bool(o.get("music", True)),
         max_pause={"relaxed": 0.6, "normal": 0.35, "tight": 0.2}.get(o.get("pace"), 0.35),
@@ -341,7 +343,13 @@ def start():
     return jsonify(ok=True)
 
 
-# ---------- caption fonts ----------
+# ---------- caption styles + fonts ----------
+@bp.get("/api/caption-styles")
+def caption_styles_list():
+    import caption_styles
+    return jsonify(styles=caption_styles.public_styles())
+
+
 def _font(fid):
     return next((f for f in pipeline.font_catalog() if f["id"] == fid), None) or abort(404)
 

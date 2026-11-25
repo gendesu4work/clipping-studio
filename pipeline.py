@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, asdict
 import cv2
 import numpy as np
 
+import caption_styles
 import fx as vfx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +36,8 @@ class Settings:
     captions: bool = True
     caption_position: str = "middle"   # top | middle | bottom
     caption_font: str = "arialbd.ttf"  # id from font_catalog(): a Windows font file or one added to fonts/
+    caption_style: str = "classic"     # preset id from caption_styles.STYLES
+    caption_custom: dict = field(default_factory=dict)  # the creator's tweaks on top of the style
     vignette: bool = True
     music: bool = True                 # only used if a music file is supplied
     music_level_db: float = -12.0      # music bed relative to the voice
@@ -450,8 +453,9 @@ def split_setup(src, info, s: Settings):
 # ---------------------------------------------------------------- 4. captions (ASS)
 USER_FONTS = os.path.join(HERE, "fonts")          # fonts the creator added
 FONT_EXT = (".ttf", ".otf")
-SYSTEM_FONTS = ["arialbd.ttf", "ariblk.ttf", "impact.ttf", "seguibl.ttf", "verdanab.ttf",
-                "trebucbd.ttf", "tahomabd.ttf", "calibrib.ttf", "georgiab.ttf", "comicbd.ttf"]
+SYSTEM_FONTS = ["arialbd.ttf", "ariblk.ttf", "impact.ttf", "seguibl.ttf", "segoeuib.ttf", "seguisb.ttf",
+                "segoeui.ttf", "verdanab.ttf", "trebucbd.ttf", "tahomabd.ttf", "calibrib.ttf", "georgiab.ttf",
+                "georgiai.ttf", "comicbd.ttf", "consolab.ttf", "courbd.ttf"]
 _font_cache = {}
 
 
@@ -467,7 +471,8 @@ def font_info(path):
         fam = str(names.getDebugName(1) or os.path.splitext(os.path.basename(path))[0])
         sub = str(names.getDebugName(2) or "Regular")
         bold = "bold" in sub.lower()
-        _font_cache[key] = (fam, bold, fam if sub.lower() in ("regular", "normal", "bold") else f"{fam} {sub}")
+        _font_cache[key] = (fam, bold, fam if sub.lower() in ("regular", "normal", "bold") else f"{fam} {sub}",
+                            "italic" in sub.lower() or "oblique" in sub.lower())
     return _font_cache[key]
 
 
@@ -478,26 +483,31 @@ def font_catalog():
         p = os.path.join(sysdir, fn)
         if os.path.exists(p):
             try:
-                fam, bold, name = font_info(p)
+                fam, bold, name, italic = font_info(p)
             except Exception:   # unreadable font: skip it rather than break the whole list
                 continue
-            out.append(dict(id=fn, name=name, family=fam, bold=bold, path=p, custom=False))
+            out.append(dict(id=fn, name=name, family=fam, bold=bold, italic=italic, path=p, custom=False))
     if os.path.isdir(USER_FONTS):
         for fn in sorted(os.listdir(USER_FONTS), key=str.lower):
             p = os.path.join(USER_FONTS, fn)
             if fn.lower().endswith(FONT_EXT):
                 try:
-                    fam, bold, name = font_info(p)
+                    fam, bold, name, italic = font_info(p)
                 except Exception:
                     continue
-                out.append(dict(id="user:" + fn, name=name, family=fam, bold=bold, path=p, custom=True))
+                out.append(dict(id="user:" + fn, name=name, family=fam, bold=bold, italic=italic, path=p, custom=True))
     return out
 
 
 def resolve_font(font_id):
     cat = font_catalog()
     return next((f for f in cat if f["id"] == font_id), None) or (cat[0] if cat else
-            dict(id="", name="Arial", family="Arial", bold=True, path=None, custom=False))
+            dict(id="", name="Arial", family="Arial", bold=True, italic=False, path=None, custom=False))
+
+
+def caption_look(s: Settings):
+    """The caption style the creator picked, with their tweaks, as one flat dict."""
+    return caption_styles.look(s.caption_style, s.caption_custom, s.caption_font, s.words_per_page, font_catalog())
 
 
 def _ass_color(rgb, alpha=0):
@@ -657,6 +667,7 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path, events=()):
         y = {"top": th * 0.16, "middle": th, "bottom": oh * 0.86}.get(s.caption_position, th)
     else:
         y = {"top": 0.22, "middle": 0.52, "bottom": 0.78}.get(s.caption_position, 0.52) * oh
+    base_fs = fs
     if s.heavy and not framed:
         fs, wpp = round(fs * 1.18), min(wpp, 3)
     hook_y = oh * 0.10
@@ -683,7 +694,7 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path, events=()):
         "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
         "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Cap,{font['family'].replace(',', ' ')},{fs},&H00FFFFFF,&H00FFFFFF,&H90000000,&H80000000,{-1 if font['bold'] else 0},0,0,0,100,100,{fs * 0.16:.1f},0,1,{fs * 0.05:.1f},{fs * 0.07:.1f},5,40,40,0,1",
+        f"Style: Cap,{font['family'].replace(',', ' ')},{fs},&H00FFFFFF,&H00FFFFFF,&H90000000,&H80000000,{-1 if font['bold'] else 0},{-1 if font.get('italic') else 0},0,0,100,100,{fs * 0.16:.1f},0,1,{fs * 0.05:.1f},{fs * 0.07:.1f},5,40,40,0,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     if framed:
@@ -691,7 +702,13 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path, events=()):
     elif plan.hook:
         lines.append(_hook_event(plan.hook, ow, hook_y, fs, total, t))
     lines += _callout_events(events, geo, fs, t, font)
-    for p, page in enumerate(pages if s.captions else []):
+    # caption styles lay words out themselves; the meme frame keeps its own one-word look in the Classic style
+    styled = s.captions and not (framed and s.caption_style == "classic")
+    if styled:
+        rows, n_pages = caption_styles.events(words, timeline, caption_look(s), font, ow, y, base_fs, t,
+                                              plan.highlights, COLORS, heavy=s.heavy and not framed)
+        lines += rows
+    for p, page in enumerate(pages if s.captions and not styled else []):
         start = page[0][1]
         nxt = pages[p + 1][0][1] if p + 1 < len(pages) else page[-1][2] + 0.8
         end = min(nxt, page[-1][2] + 0.8)
@@ -732,7 +749,7 @@ def build_ass(words, segments, plan: Plan, s: Settings, geo, path, events=()):
         lines.append(f"Dialogue: 0,{t(start)},{t(end)},Cap,,0,0,0,,{text}")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-    return len(pages)
+    return n_pages if styled else len(pages)
 
 
 # ---------------------------------------------------------------- 5. vignette
@@ -999,6 +1016,7 @@ def edit(src, out_path, instructions="", settings: Settings | None = None, music
                 + f", {len(big_cuts)} flash cuts.")
 
     if geo.get("layout") == "framed": s.vignette = False   # the frame is already black around the video
+    s.caption_font = caption_look(s)["font"]     # the style's font (or the creator's pick) for captions + hook
     use_captions = s.captions or bool(plan.hook) or geo.get("layout") == "framed" or any(e.get("text") for e in events)
     if use_captions:
         n = build_ass(words, segments, plan, s, geo, os.path.join(workdir, "captions.ass"), events)
